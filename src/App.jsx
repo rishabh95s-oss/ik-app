@@ -2647,7 +2647,25 @@ const handleLogin = async () => {
   showToast("LOGGED OUT!");
 };
 
-  // ---- Loan Party handlers ----
+// Auto-logout after inactivity
+useEffect(() => {
+  if (!currentUser) return;
+  const TIMEOUT = 30 * 60 * 1000; // 30 minutes
+  let timer;
+  const reset = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { handleLogout(); }, TIMEOUT);
+  };
+  const events = ["mousemove", "keydown", "click", "scroll", "touchstart"];
+  events.forEach(e => window.addEventListener(e, reset));
+  reset();
+  return () => {
+    clearTimeout(timer);
+    events.forEach(e => window.removeEventListener(e, reset));
+  };
+}, [currentUser]);  
+
+// ---- Loan Party handlers ----
 const addLoanPartyHandler = async () => {
   const name = newLoanParty.trim();
   if (!name) { showToast("Enter party name", "error"); return; }
@@ -3962,10 +3980,8 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
           input::placeholder{color:#334155}
         `}</style>
         <div style={{ width:"100%", maxWidth:450, padding:"40px", background:"#151b2a", borderRadius:14, border:"1px solid #1e2a3a", textAlign:"center" }}>
-          <div style={{ fontSize:28, fontWeight:800, color:"#f1f5f9", marginBottom:8, letterSpacing:"-0.5px" }}>IK Enterprises v3</div>
-          <div style={{ fontSize:12, color:"#64748b", marginBottom:32, letterSpacing:"0.5px" }}>GENERAL MERCHANT & COMMISSION AGENT · INDORE</div>
-          
-         <div style={{ marginBottom:14 }}>
+        <div style={{ fontSize:28, fontWeight:800, color:"#f1f5f9", marginBottom:32, letterSpacing:"-0.5px" }}>I K ENTERPRISES</div>
+        <div style={{ marginBottom:14 }}>
             <label style={{ fontSize:11, fontWeight:600, color:"#64748b", letterSpacing:"0.3px", display:"block", marginBottom:8 }}>EMAIL</label>
             <input
               value={loginUsername}
