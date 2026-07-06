@@ -985,3 +985,38 @@ export async function deleteNonFixedLoan(loanId) {
 
   return true;
 }
+export async function loadBanks() {
+  const { data, error } = await supabase.from('banks').select('name').order('name');
+  if (error) { console.error('loadBanks', error); return []; }
+  return data.map(r => r.name);
+}
+
+export async function addBank(name) {
+  const { error } = await supabase.from('banks').insert({ name });
+  if (error) { console.error('addBank', error); return false; }
+  return true;
+}
+
+export async function deleteBank(name) {
+  const { error } = await supabase.from('banks').delete().eq('name', name);
+  if (error) { console.error('deleteBank', error); return false; }
+  return true;
+}
+
+export async function loadIgnoredSalesParties() {
+  const { data, error } = await supabase.from('ignored_sales_parties').select('party_name').order('party_name');
+  if (error) { console.error('loadIgnoredSalesParties', error); return []; }
+  return data.map(r => r.party_name);
+}
+
+export async function addIgnoredSalesParty(party) {
+  const { error } = await supabase.from('ignored_sales_parties').insert({ party_name: party });
+  if (error) { console.error('addIgnoredSalesParty', error); return false; }
+  return true;
+}
+
+export async function deleteIgnoredSalesParty(party) {
+  const { error } = await supabase.from('ignored_sales_parties').delete().eq('party_name', party);
+  if (error) { console.error('deleteIgnoredSalesParty', error); return false; }
+  return true;
+}

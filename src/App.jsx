@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { IMPORTED_DATA } from "./importedData.js";
-import { loadRecords, upsertRecord, deleteRecord, loadSalesFlash, replaceSalesFlash, loadPurchaseFlash, replacePurchaseFlash, loadSalesWorking, upsertWorkingRow, upsertWorkingBatch, deleteWorkingRow, loadParties, addParty, deleteParty, loadBrokers, addBroker, deleteBroker, loadDeliveries, addDelivery, deleteDelivery, loadClaimRules, upsertClaimRule, deleteClaimRule, loadAppUsers, upsertAppUser, deleteAppUser, loadBankTransactions, upsertBankTransactions, updateBankTransaction, deleteBankTransaction, renamePurchaseParty, renamePurchaseDeliveryAt, renameSalesWorkingParty, renameClaimRuleParty, countPurchasesByParty, countPurchasesByDeliveryAt, countSalesWorkingByParty, countClaimRulesByParty, loadPmtLinkedSlots, upsertPmtLinkedSlot, deletePmtLinkedSlot, loadPartyPans, updatePartyPan, updatePartyPanVerified, loadFinancialYears, createFinancialYear, loadLoanParties, addLoanParty, deleteLoanParty, updateLoanPartyPan, updateLoanPartyPanVerified, loadLoanBrokers, addLoanBroker, deleteLoanBroker, updateLoanBrokerPan, updateLoanBrokerPanVerified, createLoan, addLoanInterestEvent, addLoanBrokerageAccrual, loadLoanInterestEvents, loadActiveFixedLoans, updateLoanDueDate, loadLoanBrokerageAccruals, loadLoanBrokeragePayments, addLoanBrokeragePayment, deleteLoanTerm, loadLoansWithTerms, settleNonFixedLoan, deleteNonFixedLoan } from "./dataService.js";
+import { loadRecords, upsertRecord, deleteRecord, loadSalesFlash, replaceSalesFlash, loadPurchaseFlash, replacePurchaseFlash, loadSalesWorking, upsertWorkingRow, upsertWorkingBatch, deleteWorkingRow, loadParties, addParty, deleteParty, loadBrokers, addBroker, deleteBroker, loadDeliveries, addDelivery, deleteDelivery, loadClaimRules, upsertClaimRule, deleteClaimRule, loadAppUsers, upsertAppUser, deleteAppUser, loadBankTransactions, upsertBankTransactions, updateBankTransaction, deleteBankTransaction, renamePurchaseParty, renamePurchaseDeliveryAt, renameSalesWorkingParty, renameClaimRuleParty, countPurchasesByParty, countPurchasesByDeliveryAt, countSalesWorkingByParty, countClaimRulesByParty, loadPmtLinkedSlots, upsertPmtLinkedSlot, deletePmtLinkedSlot, loadPartyPans, updatePartyPan, updatePartyPanVerified, loadFinancialYears, createFinancialYear, loadLoanParties, addLoanParty, deleteLoanParty, updateLoanPartyPan, updateLoanPartyPanVerified, loadLoanBrokers, addLoanBroker, deleteLoanBroker, updateLoanBrokerPan, updateLoanBrokerPanVerified, createLoan, addLoanInterestEvent, addLoanBrokerageAccrual, loadLoanInterestEvents, loadActiveFixedLoans, updateLoanDueDate, loadLoanBrokerageAccruals, loadLoanBrokeragePayments, addLoanBrokeragePayment, deleteLoanTerm, loadLoansWithTerms, settleNonFixedLoan, deleteNonFixedLoan, loadBanks, addBank, deleteBank,  loadIgnoredSalesParties, addIgnoredSalesParty, deleteIgnoredSalesParty } from "./dataService.js";
 import { TableVirtuoso } from "react-virtuoso";
 import { supabase } from './supabaseClient.js';
 
@@ -1983,7 +1983,7 @@ const impact = useMemo(() => {
   );
 }
 
-function ExternalSourcePurchaseTab({ records, setRecords, calcTDS, calcAll, purchaseFlashData, setPurchaseFlashData, showToast, parties, setParties, salesWorkingData, setSalesWorkingData, claimRules, activeFY }) {
+function ExternalSourcePurchaseTab({ records, setRecords, calcTDS, calcAll, purchaseFlashData, setPurchaseFlashData, showToast, parties, setParties, brokers, setBrokers, addBroker, salesWorkingData, setSalesWorkingData, claimRules, activeFY }) {
   const [subTab, setSubTab] = useState("excel");
   const [status, setStatus] = useState("");
   const [renameMode, setRenameMode] = useState("purchase"); // "purchase" or "sales"
@@ -2174,7 +2174,7 @@ const c = calcAll(p, tds, cdRule);
 
 setPurchaseFlashData(parsed);
 
-    // Auto-absorb new purchase party names into Manage parties list
+   // Auto-absorb new purchase party names into Manage parties list
     const flashParties = [...new Set(parsed.map(r => r.partyName).filter(Boolean))];
     const newParties = flashParties.filter(p => !parties.includes(p));
     for (const p of newParties) {
@@ -2183,8 +2183,19 @@ setPurchaseFlashData(parsed);
     if (newParties.length > 0) {
       setParties(prev => [...new Set([...prev, ...newParties])].sort());
     }
+  
+    // Auto-absorb new broker names into Manage brokers list
+const flashBrokers = [...new Set(parsed.map(r => r.brokerName).filter(Boolean))];
+const newBrokers = flashBrokers.filter(b => !brokers.includes(b));
+for (const b of newBrokers) {
+  await addBroker(b);
+}
+if (newBrokers.length > 0) {
+  setBrokers(prev => [...new Set([...prev, ...newBrokers])].sort());
+}
 
-    setStatus(`✅ Flash imported: ${parsed.length} rows. ${newParties.length} new parties added to Manage.`);
+
+    setStatus(`✅ Flash imported: ${parsed.length} rows. ${newParties.length} new parties, ${newBrokers.length} new brokers added to Manage.`); 
   };
 
   return (
@@ -2919,16 +2930,8 @@ const handleEditToggleTab = (tab) => {
   );
 };
 
-
-  // BANKING STATES
-const [bankingData, setBankingData] = useState(() => {
-  try {
-    const s = localStorage.getItem("ik_banking");
-    return s ? JSON.parse(s) : { HDFC: [], SBI: [], VASB: [] };
-  } catch {
-    return { HDFC: [], SBI: [], VASB: [] };
-  }
-});
+// BANKING STATES
+const [bankingData, setBankingData] = useState({ HDFC: [], SBI: [], VASB: [] });
 
 const [narrationWidth, setNarrationWidth] = useState(200);
 const [selectedBankTab, setSelectedBankTab] = useState("HDFC");
@@ -3412,14 +3415,7 @@ const getLinkedBankStatus = (refNo) => {
   const [partyPans, setPartyPans] = useState({}); 
   const [brokers, setBrokers] = useState([]);
   const [deliveries, setDeliveries] = useState([]);
-  const [banks, setBanks] = useState(() => {
-    try {
-      const s = localStorage.getItem("ik_banks");
-      return s ? JSON.parse(s) : [];
-    } catch {
-      return [];
-    }
-  });
+const [banks, setBanks] = useState([]);
 
 // Loan module state
 
@@ -3457,6 +3453,8 @@ useEffect(() => {
     setSalesWorkingData(await loadSalesWorking(activeFY));
     setParties(await loadParties());
     setBrokers(await loadBrokers());
+    setBanks(await loadBanks());
+    setIgnoredSalesParties(await loadIgnoredSalesParties());
     setLoanParties(await loadLoanParties());
     setLoanBrokers(await loadLoanBrokers());
     setLoanInterestEvents(await loadLoanInterestEvents());
@@ -3497,28 +3495,7 @@ const [view, setView] = useState("entry");
   const [purchaseSalesSearch, setPurchaseSalesSearch] = useState("");
   const [ignoredSalesParties, setIgnoredSalesParties] = useState([]);
   
- 
-
- 
-
-  useEffect(() => {
-    try { localStorage.setItem("ik_banks", JSON.stringify(banks)); } catch {}
-  }, [banks]);
-
-// SAVE ignored parties to localStorage
-useEffect(() => {
-  localStorage.setItem("ik_ignoredSalesParties", JSON.stringify(ignoredSalesParties));
-}, [ignoredSalesParties]);
-
-// LOAD ignored parties from localStorage on mount
-useEffect(() => { 
-  const saved = localStorage.getItem("ik_ignoredSalesParties");
-  if (saved) {
-    setIgnoredSalesParties(JSON.parse(saved));
-  }
-}, []);
-  
-const autoTDS = useMemo(() => calcTDS(form, records), [form, records]);
+  const autoTDS = useMemo(() => calcTDS(form, records), [form, records]);
 
 const autoCDRule = useMemo(() => {
   if (!form.deliveryAt) return "standard";
@@ -4048,7 +4025,7 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
             position: absolute !important;
             left: 50% !important;
             top: 0 !important;
-            transform: translateX(-50%) scale(1.15) !important;
+            transform: translateX(-50%) scale(1.0) !important;
             transform-origin: top center !important;
             margin: 0 !important;
             background: #fff !important;
@@ -6998,7 +6975,7 @@ const fyOf = (dateStr) => {
             { title: "PARTIES", list: parties, setList: setParties, newItem: newParty, setNewItem: setNewParty, addFn: addParty, delFn: deleteParty },
             { title: "BROKERS", list: brokers, setList: setBrokers, newItem: newBroker, setNewItem: setNewBroker, addFn: addBroker, delFn: deleteBroker },
             { title: "DELIVERIES", list: deliveries, setList: setDeliveries, newItem: newDelivery, setNewItem: setNewDelivery, addFn: addDelivery, delFn: deleteDelivery },
-            { title: "BANKS", list: banks, setList: setBanks, newItem: newBank, setNewItem: setNewBank, addFn: null, delFn: null }
+            { title: "BANKS", list: banks, setList: setBanks, newItem: newBank, setNewItem: setNewBank, addFn: addBank, delFn: deleteBank }
           ];
 
           const renderCard = ({ title, list, setList, newItem, setNewItem, addFn, delFn }) => {
@@ -7190,14 +7167,18 @@ const fyOf = (dateStr) => {
   setRecords(prev => prev.map(r => r.refNo === refNo ? updated : r));
   showToast(`Updated: ${refNo}`, "success");
 };
-  const handleIgnore = (partyName) => {
-    setIgnoredSalesParties(prev => [...prev, partyName]);
-    showToast(`${partyName} added to ignore list`, "success");
-  };
-  const handleUnignore = (party) => {
-    setIgnoredSalesParties(prev => prev.filter(p => p !== party));
-    showToast(`${party} removed from ignore list`, "info");
-  };
+  const handleIgnore = async (partyName) => {
+  const ok = await addIgnoredSalesParty(partyName);
+  if (!ok) { showToast("Failed to save — check connection", "error"); return; }
+  setIgnoredSalesParties(prev => [...new Set([...prev, partyName])]);
+  showToast(`${partyName} added to ignore list`, "success");
+};
+const handleUnignore = async (party) => {
+  const ok = await deleteIgnoredSalesParty(party);
+  if (!ok) { showToast("Failed to remove — check connection", "error"); return; }
+  setIgnoredSalesParties(prev => prev.filter(p => p !== party));
+  showToast(`${party} removed from ignore list`, "info");
+};
 
   const H = (label) => (cols) => (
     <tr style={{ background:"#151b2a" }}>
@@ -7382,21 +7363,24 @@ const fyOf = (dateStr) => {
 )}
 
 {view === "externalSourcePurchase" && (
-  <ExternalSourcePurchaseTab
-    records={records}
-    setRecords={setRecords}
-    calcTDS={calcTDS}
-    calcAll={calcAll}
-    purchaseFlashData={purchaseFlashData}
-    setPurchaseFlashData={setPurchaseFlashData}
-    showToast={showToast}
-    parties={parties}
-    setParties={setParties}
-    salesWorkingData={salesWorkingData}
-    setSalesWorkingData={setSalesWorkingData}
-    claimRules={claimRules}
-     activeFY={activeFY}
-  />
+<ExternalSourcePurchaseTab
+  records={records}
+  setRecords={setRecords}
+  calcTDS={calcTDS}
+  calcAll={calcAll}
+  purchaseFlashData={purchaseFlashData}
+  setPurchaseFlashData={setPurchaseFlashData}
+  showToast={showToast}
+  parties={parties}
+  setParties={setParties}
+  addBroker={addBroker}
+  brokers={brokers}
+  setBrokers={setBrokers}
+  salesWorkingData={salesWorkingData}
+  setSalesWorkingData={setSalesWorkingData}
+  claimRules={claimRules}
+  activeFY={activeFY}
+/>
 )}
   {view === "loan" && (
   <div>
