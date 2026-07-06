@@ -405,6 +405,7 @@ function calcAll(f, autoTDS = 0, cdRule = "standard") {
   const I = parseFloat(f.billQty) || 0;
   const J = parseFloat(f.receiveQty) || 0;
   const L = parseFloat(f.halfKgValue) || 0;
+  const G = Math.round((parseFloat(f.gunnyWeight) || 0) * 1000) / 1000;   // ← 1000 for 3 decimals
   const P = parseFloat(f.cdPct) || 0;
   const R = parseFloat(f.qualityClaim) || 0;
   const S = parseFloat(f.hammali) || 0;
@@ -418,7 +419,7 @@ function calcAll(f, autoTDS = 0, cdRule = "standard") {
 
   const K = Math.round((I - J) * 100) / 100;
   const M = Math.round((L * J / 100) * 100) / 100;
-  const N = Math.round((J - M) * 100) / 100;
+  const N = Math.round((J - M - G) * 100) / 100;
   const O = Math.round(N * H);
   const Q = cdRule === "gross"
     ? Math.round(P * J * H / 100)
@@ -429,7 +430,7 @@ function calcAll(f, autoTDS = 0, cdRule = "standard") {
   const AJ = Z - AA - AD - AG;
   const AK = Math.round(I * H);
 
-  return { shortage: K, halfKgQty: M, netQty: N, netAmt1: O, cdAmt: Q, netAmt: V, brokerageAmt: X, tds: Y, finalAmt: Z, balance: AJ, partyBillAmt: AK };
+ return { shortage: K, halfKgQty: M, gunnyDeduct: G, netQty: N, netAmt1: O, cdAmt: Q, netAmt: V, brokerageAmt: X, tds: Y, finalAmt: Z, balance: AJ, partyBillAmt: AK };
 }
 
 // Recompute purchase TDS + calcAll (with correct cdRule) for every bill of the
@@ -505,6 +506,7 @@ function calculateSalesFields(record) {
   const grossAmt = Math.round(qty * rate);
 const shortage = qty - receivedWeight;
 const shortageAmount = Math.round(shortage * rate);
+const gunnyWeight = parseFloat(record.gunnyWeight) || 0;
 const claim = parseFloat(record.claim) || 0;
   const cdRule = record.cdRule || "standard";
  
@@ -512,7 +514,7 @@ const claim = parseFloat(record.claim) || 0;
     ? Math.round((receivedWeight * rate) * cdPct / 100)
     : Math.round(((receivedWeight * rate) - claim) * cdPct / 100);
 
-  const netAmt = grossAmt - shortageAmount - claim - cd - tdsReceived;
+  const netAmt = grossAmt - shortageAmount - claim - cd - tdsReceived - gunnyAmount;
   const totalPaid = bankPmt1 + bankPmt2 + bankPmt3;
   const pendingAmt = netAmt - totalPaid;
 
@@ -566,6 +568,8 @@ const claim = parseFloat(record.claim) || 0;
     ...record,
     shortage: Math.round(shortage * 100) / 100,
     shortageAmount: Math.round(shortageAmount),
+      gunnyWeight: gunnyWeight,
+     gunnyAmount: gunnyAmount,
     claim: claim,
     cd: cd,
    netAmt: netAmt,
@@ -585,6 +589,8 @@ const WORKING_COLS = [
   { label: "Rec Weight", w: 80, align: "right" },
   { label: "Shortage", w: 70, align: "right" },
   { label: "Shortage Amt", w: 80, align: "right" },
+  { label: "Gunny Wt", w: 70, align: "right" },
+  { label: "Gunny Amt", w: 80, align: "right" },
   { label: "Claim %", w: 70, align: "right" },
   { label: "Claim", w: 70, align: "right" },
   { label: "CD %", w: 60, align: "right" },
@@ -640,6 +646,14 @@ const SalesWorkingCells = React.memo(function SalesWorkingCells({ rec, onUpdate,
 
       <td style={tdR}>{calculated.shortage.toFixed(2)}</td>
       <td style={tdR}>₹{calculated.shortageAmount}</td>
+    
+    <td style={tdEdit}>
+  <input type="number" step="0.001" value={rec.gunnyWeight || 0}
+    onChange={(e) => onUpdate({ ...rec, gunnyWeight: parseFloat(e.target.value) || 0 })}
+    onBlur={() => onSave({ ...rec, gunnyWeight: rec.gunnyWeight })}
+    style={editStyle} />
+</td>
+<td style={tdR}>₹{calculated.gunnyAmount}</td>
 
     <td style={tdEdit}>
   <input type="number" step="0.01" value={rec.claimPct}
@@ -1207,6 +1221,8 @@ const SALES_SUMMARY_COLS = [
   { key:"rate",           label:"Rate",         align:"right", type:"money" },
   { key:"shortage",       label:"Shortage",     align:"right", type:"num",   calc:true },
   { key:"shortageAmount", label:"Shortage Amt", align:"right", type:"money", calc:true },
+  { key:"gunnyWeight",    label:"Gunny Wt",     align:"right", type:"num"   },
+  { key:"gunnyAmount",    label:"Gunny Amt",    align:"right", type:"money", calc:true },
   { key:"claim",          label:"Claim",        align:"right", type:"money" },
   { key:"cd",             label:"CD",           align:"right", type:"money" },
   { key:"tdsReceived",    label:"TDS",          align:"right", type:"money" },
@@ -1247,7 +1263,7 @@ const SalesSummaryRow = React.memo(function SalesSummaryRow({ rec, cols }) {
 const EMPTY = {
   refNo:"", deliveryAt:"", truckNo:"", partyName:"", brokerName:"",
   billDate:"", billNo:"", rate:"", billQty:"", receiveQty:"",
-  halfKgValue:"", cdPct:"", qualityClaim:"", hammali:"", freight:"",
+  halfKgValue:"", gunnyWeight:"", cdPct:"", qualityClaim:"",
   others:"", brokerageRate:"", brokerageAmt:"", tcs:"", note:"",
   bankAmt1:"", bankDate1:"", bankName1:"",
   bankAmt2:"", bankDate2:"", bankName2:"",
@@ -1422,7 +1438,7 @@ const loadAtIndex = (idx) => {
             <tr style={rh(16)}>
               <td style={{ fontSize:fs(20), textAlign:"left", padding:"0px 6px", borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{hisabRec.billNo || "—"}</td>
               <td style={{ fontSize:fs(18), textAlign:"left", padding:"0px 4px", whiteSpace:"nowrap" }}>{fmtDate(hisabRec.billDate)}</td>
-              <td style={{ fontSize:fs(20), textAlign:"right", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{hisabRec.billQty || "—"}</td>
+             <td style={{ fontSize:fs(20), textAlign:"right", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{hisabRec.billQty ? parseFloat(hisabRec.billQty).toFixed(2) : "—"}</td>
               <td colSpan={2} style={{ fontSize:fs(14), fontStyle:"italic", textAlign:"right", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>PARTY BILL AMT.</td>
               <td style={{ fontSize:fs(20), textAlign:"left", padding:"0px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{h(c.partyBillAmt)}</td>
             </tr>
@@ -1438,9 +1454,15 @@ const loadAtIndex = (idx) => {
               <td style={{ fontSize:fs(16), textAlign:"left", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{c.halfKgQty > 0 ? "("+parseFloat(hisabRec.halfKgValue||0)+" KG)" : ""}</td>
               <td colSpan={2} style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
             </tr>
+           <tr style={rh(16)}>
+              <td colSpan={2} style={{ borderLeft:thin, whiteSpace:"nowrap", overflow:"hidden" }}></td>
+              <td style={{ fontSize:fs(20), textAlign:"right", padding:"0px 4px", whiteSpace:"nowrap", overflow:"hidden" }}>{c.gunnyDeduct > 0 ? (-c.gunnyDeduct).toFixed(3) : ""}</td>
+              <td style={{ fontSize:fs(16), textAlign:"left", padding:"0px 4px", whiteSpace:"nowrap", overflow:"hidden" }}>{c.gunnyDeduct > 0 ? "GUNNY" : ""}</td>
+              <td colSpan={2} style={{ borderRight:thin, whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            </tr>
             <tr style={rh(16)}>
               <td colSpan={2} style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td style={{ fontSize:fs(20), textAlign:"right", padding:"0px 4px", borderTop:hair , whiteSpace:"nowrap", overflow:"hidden" }}>{c.netQty}</td>
+              <td style={{ fontSize:fs(20), textAlign:"right", padding:"0px 4px", borderTop:hair , whiteSpace:"nowrap", overflow:"hidden" }}>{c.netQty.toFixed(2)}</td>
               <td style={{ borderTop:hair , whiteSpace:"nowrap", overflow:"hidden" }}></td>
               <td style={{ fontSize:fs(20), textAlign:"left", padding:"0px 4px", borderTop:hair , whiteSpace:"nowrap", overflow:"hidden" }}>{hisabRec.rate ? Math.round(parseFloat(hisabRec.rate)) : "—"}</td>
               <td style={{ fontSize:fs(20), textAlign:"left", padding:"0px 6px", borderTop:hair, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{h(c.netAmt1)}</td>
@@ -2548,7 +2570,6 @@ const [navScrollWidth, setNavScrollWidth] = useState(0);
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [newUsername, setNewUsername] = useState("");
-  const [newPassword, setNewPassword] = useState("");
   const [newUserRole, setNewUserRole] = useState("Restricted");
   const [selectedTabs, setSelectedTabs] = useState(["entry", "data"]);
   const [editingUserId, setEditingUserId] = useState(null);
@@ -2556,7 +2577,6 @@ const [navScrollWidth, setNavScrollWidth] = useState(0);
   const [editFYs, setEditFYs] = useState([]);
   const [editTabs, setEditTabs] = useState([]);
   const [editUsername, setEditUsername] = useState("");
-const [editPassword, setEditPassword] = useState("");
 const [editRole, setEditRole] = useState("Restricted");
 
 const allTabs = ["entry", "data", "externalSourcePurchase", "pmt", "hisab", "manage", "banking", "reconcile", "sales", "purchaseSalesReconcile", "tds", "claimManagement", "loan" ,"users"];
@@ -2816,9 +2836,8 @@ const handleRenewLoan = async () => {
   
     const handleAddUser = async () => {
     const username = newUsername.trim();
-    const password = newPassword.trim();
     
-    if (!username || !password) {
+    if (!username) {
       showToast("ENTER USERNAME & PASSWORD", "error");
       return;
     }
@@ -2835,7 +2854,6 @@ const handleRenewLoan = async () => {
     
    const newUser = {
   username,
-  password,
   role: newUserRole,
   tabs: selectedTabs,
 };
@@ -2846,7 +2864,6 @@ if (!ok) { showToast("FAILED TO SAVE — CHECK CONNECTION", "error"); return; }
 const loaded = await loadAppUsers();
 setUsers(loaded);
 setNewUsername("");
-setNewPassword("");
 setNewUserRole("Restricted");
 setSelectedTabs(["entry", "data"]);
 showToast("USER ADDED!");
@@ -2879,7 +2896,6 @@ showToast("USER ADDED!");
   const handleStartEdit = (user) => {
   setEditingUserId(user.id);
   setEditUsername(user.username);
-  setEditPassword(user.password);
   setEditRole(user.role);
   setEditTabs([...user.tabs]);
   setEditFYs([...(user.allowedFys || [])]);
@@ -2893,8 +2909,8 @@ const handleEditToggleFY = (fy) => {
 };
 
 const handleSaveEdit = async () => {
-  if (!editUsername.trim() || !editPassword.trim()) {
-    showToast("ENTER USERNAME & PASSWORD", "error");
+  if (!editUsername.trim()) {
+    showToast("ENTER USERNAME", "error");
     return;
   }
 
@@ -2906,7 +2922,6 @@ const handleSaveEdit = async () => {
 const updatedUser = {
   ...users.find(u => u.id === editingUserId),
   username: editUsername.trim(),
-  password: editPassword.trim(),
   role: editRole,
   tabs: editTabs,
   allowedFys: editFYs
@@ -2925,7 +2940,6 @@ if (currentUser.id === editingUserId) {
 showToast("USER UPDATED!");
 setEditingUserId(null);
 setEditUsername("");
-setEditPassword("");
 setEditRole("Restricted");
 setEditTabs([]);
 setEditFYs([]);
@@ -2934,7 +2948,6 @@ setEditFYs([]);
 const handleCancelEdit = () => {
   setEditingUserId(null);
   setEditUsername("");
-  setEditPassword("");
   setEditRole("Restricted");
   setEditTabs([]);
   setEditFYs([]);
@@ -3197,6 +3210,7 @@ const parseFlashData = (pastedText) => {
       receivedWeight: 0,
       shortage: 0,
       shortageAmount: 0,
+      gunnyWeight: 0,
       claimPct: 0,
       claim: 0,
       cdPct: 0,
@@ -3669,9 +3683,9 @@ const hasBlankBroker = useMemo(() => {
   const printTable = (rows, title) => {
     if (rows.length === 0) { showToast("Nothing to print", "error"); return; }
 
-    const columnOrder = ["_bankLinked","refNo","deliveryAt","truckNo","partyName","brokerName","billDate","billNo","rate","billQty","receiveQty","_shortage","halfKgValue","_halfKgQty","_netQty","_netAmt1","cdPct","_cdAmt","qualityClaim","hammali","freight","others","_netAmt","brokerageRate","_brokerageAmt","_tds","_finalAmt","bankAmt1","bankDate1","bankName1","bankAmt2","bankDate2","bankName2","bankAmt3","bankDate3","bankName3","_balance","note"];
-  const partyBaseColumns = ["refNo","deliveryAt","truckNo","partyName","brokerName","billDate","billNo","rate","billQty","_shortage","_halfKgQty","_netQty","_netAmt1","_cdAmt","qualityClaim","hammali","freight","others","_netAmt","_tds","_brokerageAmt","_finalAmt"];
-    const brokerBaseColumns = ["refNo","deliveryAt","truckNo","partyName","brokerName","billDate","billNo","rate","billQty","_shortage","_halfKgQty","_netQty","_netAmt1","_cdAmt","qualityClaim","hammali","freight","others","_netAmt","_tds","_brokerageAmt","_finalAmt"];
+    const columnOrder = ["_bankLinked","refNo","deliveryAt","truckNo","partyName","brokerName","billDate","billNo","rate","billQty","receiveQty","_shortage","halfKgValue","gunnyWeight","_halfKgQty","_netQty","_netAmt1","cdPct","_cdAmt","qualityClaim","hammali","freight","others","_netAmt","brokerageRate","_brokerageAmt","_tds","_finalAmt","bankAmt1","bankDate1","bankName1","bankAmt2","bankDate2","bankName2","bankAmt3","bankDate3","bankName3","_balance","note"];
+    const partyBaseColumns = ["refNo","deliveryAt","truckNo","partyName","brokerName","billDate","billNo","rate","billQty","_shortage","_halfKgQty","gunnyWeight","_netQty","_netAmt1","_cdAmt","qualityClaim","hammali","freight","others","_netAmt","_tds","_brokerageAmt","_finalAmt"];
+const brokerBaseColumns = ["refNo","deliveryAt","truckNo","partyName","brokerName","billDate","billNo","rate","billQty","_shortage","_halfKgQty","gunnyWeight","_netQty","_netAmt1","_cdAmt","qualityClaim","hammali","freight","others","_netAmt","_tds","_brokerageAmt","_finalAmt"];
 let cols;
     if (summaryType === "party") {
       cols = partyBaseColumns.filter(k => rows.some(r => r[k] && String(r[k]).trim() && String(r[k]).trim() !== "0"))
@@ -3764,7 +3778,7 @@ let cols;
 
     if (rowsData.length === 0) { showToast("Nothing to export", "error"); return; }
 
-    const headers = ["Ref No","Date","Party","Broker","Item","Qty","Rate","Rec Weight","Shortage","Shortage Amt","Claim %","Claim","CD %","CD","TDS","Net Amt","Bk Date 1","Bk Pmt 1","Bk Date 2","Bk Pmt 2","Bk Date 3","Bk Pmt 3","Pending","Days"];
+  const headers = ["Ref No","Date","Party","Broker","Item","Qty","Rate","Rec Weight","Shortage","Shortage Amt","Gunny Wt","Gunny Amt","Claim %","Claim","CD %","CD","TDS","Net Amt","Bk Date 1","Bk Pmt 1","Bk Date 2","Bk Pmt 2","Bk Date 3","Bk Pmt 3","Pending","Days"];
 
     const rows = rowsData.map(r => {
       const c = calculateSalesFields(r);
@@ -3772,6 +3786,7 @@ let cols;
         r.refNo, r.date, r.partyName, r.broker, r.itemName,
         r.qty, r.rate, r.receivedWeight,
         c.shortage, Math.round(c.shortageAmount),
+        c.gunnyWeight, Math.round(c.gunnyAmount),
         r.claimPct, Math.round(parseFloat(r.claim) || 0),
         r.cdPct, Math.round(c.cd),
         Math.round(parseFloat(r.tdsReceived) || 0),
@@ -3789,7 +3804,7 @@ let cols;
   const exportDataCSV = () => {
     if (filtered.length === 0) { showToast("Nothing to export", "error"); return; }
 
-    const columnOrder = ["_bankLinked","refNo","deliveryAt","truckNo","partyName","brokerName","billDate","billNo","rate","billQty","receiveQty","_shortage","halfKgValue","_halfKgQty","_netQty","_netAmt1","cdPct","_cdAmt","qualityClaim","hammali","freight","others","_netAmt","brokerageRate","_brokerageAmt","_tds","_finalAmt","bankAmt1","bankDate1","bankName1","bankAmt2","bankDate2","bankName2","bankAmt3","bankDate3","bankName3","_balance","note"];
+   const columnOrder = ["_bankLinked","refNo","deliveryAt","truckNo","partyName","brokerName","billDate","billNo","rate","billQty","receiveQty","_shortage","halfKgValue","gunnyWeight","_halfKgQty","_netQty","_netAmt1","cdPct","_cdAmt","qualityClaim","hammali","freight","others","_netAmt","brokerageRate","_brokerageAmt","_tds","_finalAmt","bankAmt1","bankDate1","bankName1","bankAmt2","bankDate2","bankName2","bankAmt3","bankDate3","bankName3","_balance","note"];
     const partyBaseColumns = ["refNo","deliveryAt","truckNo","partyName","brokerName","billDate","billNo","rate","billQty","_shortage","_halfKgQty","_netQty","_netAmt1","_cdAmt","qualityClaim","hammali","freight","others","_netAmt","_tds","_brokerageAmt","_finalAmt"];
     const brokerBaseColumns = partyBaseColumns;
 
@@ -4229,6 +4244,9 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
                   <div><label style={lbl}>0.5 KG Value (e.g. 0.5, 0.3)</label>
                     <input type="number" name="halfKgValue" value={form.halfKgValue} onChange={handleChange} style={inp} placeholder="0" />
                   </div>
+                  <div><label style={lbl}>Gunny Bag Wt (Qt)</label>
+                    <input type="number" step="0.001" name="gunnyWeight" value={form.gunnyWeight} onChange={handleChange} style={inp} placeholder="0.000" />
+                   </div>
                   <div><label style={lbl}>CD %</label>
                     <input type="number" name="cdPct" value={form.cdPct} onChange={handleChange} style={inp} placeholder="0" />
                   </div>
@@ -4315,6 +4333,7 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
               {[
                 ["Shortage Qty", calc.shortage + " Qt", false],
                 ["0.5 KG Qty Deduct", calc.halfKgQty + " Qt", false],
+                ["Gunny Deduct", calc.gunnyDeduct + " Qt", false],
                 ["Net Qty", calc.netQty + " Qt", false],
                 ["Net Amt 1 (Gross)", "₹ " + fmt(calc.netAmt1), false],
                 ["CD Amount", "₹ " + fmt(calc.cdAmt), false],
@@ -4454,16 +4473,7 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
           />
         </div>
         
-        <div style={{ marginBottom:12 }}>
-          <label style={lbl}>Password</label>
-          <input
-            type="password"
-            value={editingUserId ? editPassword : newPassword}
-            onChange={e => editingUserId ? setEditPassword(e.target.value) : setNewPassword(e.target.value)}
-            placeholder="Enter password..."
-            style={inp}
-          />
-        </div>
+        
         
         <div style={{ marginBottom:16 }}>
           <label style={lbl}>Role</label>
@@ -5991,7 +6001,7 @@ const fyOf = (dateStr) => {
   // Guards: don't overwrite a field that already has a value (protects manual corrections)
   const hasClaim  = (r) => (parseFloat(r.claim) || 0) > 0;
   const hasRecWt  = (r) => (parseFloat(r.receivedWeight) || 0) > 0;
-
+  const hasGunny  = (r) => (parseFloat(r.gunnyWeight) || 0) > 0;
   setSalesWorkingData(prev => {
     const newData = prev.map(salesRec => {
       const rule = ruleMap.get(salesRec.partyName);
@@ -6034,6 +6044,7 @@ const fyOf = (dateStr) => {
         const updatedRec = {
           ...salesRec,
           receivedWeight: hasRecWt(salesRec) ? salesRec.receivedWeight : (parseFloat(salesRec.qty) || 0),
+           gunnyWeight: hasGunny(salesRec) ? salesRec.gunnyWeight : (parseFloat(dataRec.gunnyWeight) || 0),
           cdRule
         };
         updatedRecords.push(updatedRec);
@@ -6057,6 +6068,7 @@ const fyOf = (dateStr) => {
         ...salesRec,
         receivedWeight: hasRecWt(salesRec) ? salesRec.receivedWeight : newRecWeight,
         claim: hasClaim(salesRec) ? salesRec.claim : newClaim,
+gunnyWeight: hasGunny(salesRec) ? salesRec.gunnyWeight : (parseFloat(dataRec.gunnyWeight) || 0),
         cdRule
       };
       updatedRecords.push(updatedRec);
@@ -6177,7 +6189,7 @@ const fyOf = (dateStr) => {
     const newRow = {
       ...rec,
       id: rec.refNo,
-      receivedWeight:0, claimPct:0, claim:0, cdPct:0, cd:0, tdsReceived:0,
+      receivedWeight:0, gunnyWeight:0, claimPct:0, claim:0, cdPct:0, cd:0, tdsReceived:0,
       bankDate1:"", bankPmt1:0, bankDate2:"", bankPmt2:0, bankDate3:"", bankPmt3:0,
       pmtId1:"", pmtId2:"", pmtId3:""
     };
@@ -6756,7 +6768,7 @@ const fyOf = (dateStr) => {
       const visibleKeys = isSummaryMode 
         ? summaryColumns.filter(key => filtered.some(r => r[key] && String(r[key]).trim() && String(r[key]).trim() !== "0"))
         : columnsToUse.filter(key => filtered.some(r => r[key] && String(r[key]).trim()));
-      const columnOrder = ["_bankLinked","refNo", "deliveryAt", "truckNo", "partyName", "brokerName", "billDate", "billNo", "rate", "billQty", "receiveQty", "_shortage", "halfKgValue", "_halfKgQty", "_netQty", "_netAmt1", "cdPct", "_cdAmt", "qualityClaim", "hammali", "freight", "others", "_netAmt", "brokerageRate","_brokerageAmt", "_tds", "_finalAmt", "bankAmt1", "bankDate1", "bankName1", "bankAmt2", "bankDate2", "bankName2", "bankAmt3", "bankDate3", "bankName3", "_balance", "note"];
+      const columnOrder = ["_bankLinked","refNo", "deliveryAt", "truckNo", "partyName", "brokerName", "billDate", "billNo", "rate", "billQty", "receiveQty", "_shortage", "halfKgValue", "gunnyWeight", "_halfKgQty", "_netQty", "_netAmt1", "cdPct", "_cdAmt", "qualityClaim", "hammali", "freight", "others", "_netAmt", "brokerageRate","_brokerageAmt", "_tds", "_finalAmt", "bankAmt1", "bankDate1", "bankName1", "bankAmt2", "bankDate2", "bankName2", "bankAmt3", "bankDate3", "bankName3", "_balance", "note"];
       const sortedVisibleKeys = [...visibleKeys].sort((a, b) => {
         const aIdx = columnOrder.indexOf(a);
         const bIdx = columnOrder.indexOf(b);
