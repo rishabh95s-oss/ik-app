@@ -4257,14 +4257,19 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
               <div style={sec}>
                 <div style={stitle}>Transaction Details</div>
                 <div style={grid}>
-                <div><label style={lbl}>Ref No *</label>
+               <div><label style={lbl}>Ref No *</label>
                     <div style={{ display:"flex", gap:8 }}>
                       <input name="refNo" value={form.refNo} onChange={handleChange} style={{ ...inp, borderColor: form.refNo ? "#f59e0b" : "#1e2a3a", flex:1 }} placeholder="Enter Ref No" />
                       <button onClick={handleEditByRef} style={{ background:"linear-gradient(135deg,#38bdf8,#0284c7)", border:"none", borderRadius:8, padding:"9px 16px", color:"#fff", fontWeight:700, fontSize:13, cursor:"pointer", whiteSpace:"nowrap" }}>
                         ✏ Edit
                       </button>
                     </div>
-                  </div>            
+                    {!editMode && form.refNo.trim() && records.some(r => r.refNo.trim().toUpperCase() === form.refNo.trim().toUpperCase()) && (
+                      <div style={{ fontSize:11, color:"#ef4444", fontWeight:600, marginTop:4 }}>
+                        ⚠ Ref No {form.refNo.trim()} already exists
+                      </div>
+                    )}
+                  </div>        
                    <div><label style={lbl}>Bill No</label>
                  <input name="billNo" value={form.billNo} onChange={handleChange} style={inp} placeholder="Bill No" />
                  </div>
