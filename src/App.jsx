@@ -3634,14 +3634,19 @@ const hasBlankBroker = useMemo(() => {
     let { ok: recOk, records: newRecords } = await recomputePartiesTDS([record.partyName], merged, claimRules, "changed", activeFY);
     if (!recOk) { showToast("SAVED, BUT TDS REFRESH FAILED — CHECK CONNECTION", "error"); }
 
-    // Auto-create skeleton entries for linked refs (multi-location) — new entries only, never overwrite
-    if (!editMode) {
+// Auto-create skeleton entries for linked refs (multi-location) — never overwrite existing refs
+    {
       const linkedRefs = [form.refA, form.refB].map(r => (r || "").trim()).filter(Boolean);
       const createdSkeletons = [];
+      const rejectedExisting = [];
       for (const linkRef of linkedRefs) {
-        if (newRecords.some(r => r.refNo.trim().toUpperCase() === linkRef.toUpperCase())) continue; // never overwrite
+        if (linkRef.toUpperCase() === refNo.toUpperCase()) continue; // don't link a ref to itself
+        if (newRecords.some(r => r.refNo.trim().toUpperCase() === linkRef.toUpperCase())) {
+          rejectedExisting.push(linkRef); // ref already exists — cannot be used as a link
+          continue;
+        }
 
-       const skeleton = {
+        const skeleton = {
           ...EMPTY,
           refNo: linkRef,
           truckNo: form.truckNo,
@@ -3662,20 +3667,22 @@ const hasBlankBroker = useMemo(() => {
           newRecords = [...newRecords, skRecord];
         }
       }
-      if (createdSkeletons.length > 0) {
-        showToast(`FORM SUBMITTED! Created ${createdSkeletons.length} linked skeleton(s): ${createdSkeletons.map(s => s.refNo).join(", ")}`);
+      const baseMsg = editMode ? "RECORD UPDATED!" : "FORM SUBMITTED!";
+      const parts = [];
+      if (createdSkeletons.length > 0) parts.push(`Created ${createdSkeletons.map(s => s.refNo).join(", ")}`);
+      // On new entries, warn about existing refs; on edits, existing refs are normal (prior skeletons) — stay quiet
+      if (!editMode && rejectedExisting.length > 0) parts.push(`⚠ Ref already exists, cannot link: ${rejectedExisting.join(", ")}`);
+      if (parts.length > 0) {
+        showToast(`${baseMsg} ${parts.join(" | ")}`, (!editMode && rejectedExisting.length > 0) ? "error" : "success");
       } else {
-        showToast("FORM SUBMITTED!");
+        showToast(baseMsg);
       }
-    } else {
-      showToast("RECORD UPDATED!");
     }
 
     setRecords(newRecords);
     setForm({ ...EMPTY });
     setEditMode(false);
   };
-
   const handleEditByRef = () => {
     const refNo = form.refNo.trim();
     if (!refNo) { showToast("ENTER REF NO FIRST", "error"); return; }
