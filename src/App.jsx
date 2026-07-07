@@ -3630,11 +3630,47 @@ const hasBlankBroker = useMemo(() => {
       merged.push(record);
     }
 
-    // Recompute the party's other bills (only shifted ones get written — no lag)
-    const { ok: recOk, records: newRecords } = await recomputePartiesTDS([record.partyName], merged, claimRules, "changed", activeFY);
+   // Recompute the party's other bills (only shifted ones get written — no lag)
+    let { ok: recOk, records: newRecords } = await recomputePartiesTDS([record.partyName], merged, claimRules, "changed", activeFY);
     if (!recOk) { showToast("SAVED, BUT TDS REFRESH FAILED — CHECK CONNECTION", "error"); }
 
-    showToast(editMode ? "RECORD UPDATED!" : "FORM SUBMITTED!");
+    // Auto-create skeleton entries for linked refs (multi-location) — new entries only, never overwrite
+    if (!editMode) {
+      const linkedRefs = [form.refA, form.refB].map(r => (r || "").trim()).filter(Boolean);
+      const createdSkeletons = [];
+      for (const linkRef of linkedRefs) {
+        if (newRecords.some(r => r.refNo.trim().toUpperCase() === linkRef.toUpperCase())) continue; // never overwrite
+
+       const skeleton = {
+          ...EMPTY,
+          refNo: linkRef,
+          truckNo: form.truckNo,
+          partyName: form.partyName,
+          brokerName: form.brokerName,
+          billDate: form.billDate,
+          billNo: form.billNo,
+          refA: refNo // point back to the parent
+        };
+        const skTds = calcTDS(skeleton, newRecords);
+        const skCdRule = claimRules.find(r => r.partyName === skeleton.deliveryAt)?.cdRule || "standard";
+        const skC = calcAll(skeleton, skTds, skCdRule);
+        const skRecord = { ...skeleton, _tds: skTds, _cdRule: skCdRule, _shortage: skC.shortage, _halfKgQty: skC.halfKgQty, _netQty: skC.netQty, _netAmt1: skC.netAmt1, _cdAmt: skC.cdAmt, _netAmt: skC.netAmt, _brokerageAmt: skC.brokerageAmt, _finalAmt: skC.finalAmt, _balance: skC.balance };
+
+        const okSk = await upsertRecord(skRecord, activeFY);
+        if (okSk) {
+          createdSkeletons.push(skRecord);
+          newRecords = [...newRecords, skRecord];
+        }
+      }
+      if (createdSkeletons.length > 0) {
+        showToast(`FORM SUBMITTED! Created ${createdSkeletons.length} linked skeleton(s): ${createdSkeletons.map(s => s.refNo).join(", ")}`);
+      } else {
+        showToast("FORM SUBMITTED!");
+      }
+    } else {
+      showToast("RECORD UPDATED!");
+    }
+
     setRecords(newRecords);
     setForm({ ...EMPTY });
     setEditMode(false);
