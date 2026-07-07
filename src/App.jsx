@@ -4232,11 +4232,11 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
               <div style={sec}>
                 <div style={stitle}>Quantity, Rate & Deductions</div>
                 <div style={grid}>
-                  <div><label style={lbl}>Rate (per Qt) ₹</label>
-                    <input type="number" name="rate" value={form.rate} onChange={handleChange} style={inp} placeholder="0" />
-                  </div>
                   <div><label style={lbl}>Bill Qty (Qt)</label>
                     <input type="number" name="billQty" value={form.billQty} onChange={handleChange} style={inp} placeholder="0.00" />
+                  </div>
+                  <div><label style={lbl}>Rate (per Qt) ₹</label>
+                    <input type="number" name="rate" value={form.rate} onChange={handleChange} style={inp} placeholder="0" />
                   </div>
                   <div><label style={lbl}>Receive Qty (Qt)</label>
                     <input type="number" name="receiveQty" value={form.receiveQty} onChange={handleChange} style={inp} placeholder="0.00" />
