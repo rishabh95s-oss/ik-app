@@ -3476,6 +3476,7 @@ const [loanForm, setLoanForm] = useState({
 // Load data from Supabase on mount + whenever active FY changes
 
 useEffect(() => {
+  if (!currentUser) return; // wait until authenticated — RLS returns nothing pre-login
   (async () => {
     setRecords(await loadRecords(activeFY));
     setPartyPans(await loadPartyPans());
@@ -3506,11 +3507,11 @@ useEffect(() => {
     ]);
     setBankingData({ HDFC: hdfc, SBI: sbi, VASB: vasb });
 
-    // Load pmt linked slots (year-filtered)
+   // Load pmt linked slots (year-filtered)
     const slots = await loadPmtLinkedSlots(activeFY);
     if (slots) setPmtLinkedSlots(slots);
   })();
-}, [activeFY]);
+}, [activeFY, currentUser]);
   
 const [view, setView] = useState("entry");
   const [form, setForm] = useState({ ...EMPTY });
