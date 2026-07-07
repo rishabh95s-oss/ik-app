@@ -3693,7 +3693,7 @@ const hasBlankBroker = useMemo(() => {
     showToast("DATA LOADED FOR EDITING");
   };
 
- const handleDeleteEntry = async () => {
+const handleDeleteEntry = async () => {
     const refNo = form.refNo.trim();
     if (!refNo || !editMode) { showToast("LOAD A RECORD FIRST (use Edit)", "error"); return; }
     if (!confirm(`Delete Ref No ${refNo}?\n\nParty: ${form.partyName || "(none)"}\nThis permanently removes the purchase record.`)) return;
@@ -3701,12 +3701,34 @@ const hasBlankBroker = useMemo(() => {
     const ok = await deleteRecord(refNo, activeFY);
     if (!ok) { showToast("FAILED TO DELETE — CHECK CONNECTION", "error"); return; }
 
-    setRecords(prev => prev.filter(r => r.refNo.trim().toUpperCase() !== refNo.toUpperCase()));
+    // Clear any link references pointing to the deleted ref (prevents accidental re-creation on later edits)
+    const upper = refNo.toUpperCase();
+    let remaining = records.filter(r => r.refNo.trim().toUpperCase() !== upper);
+    const referrers = remaining.filter(r =>
+      (r.refA || "").trim().toUpperCase() === upper || (r.refB || "").trim().toUpperCase() === upper
+    );
+    let clearedCount = 0;
+    for (const ref of referrers) {
+      const cleaned = {
+        ...ref,
+        refA: (ref.refA || "").trim().toUpperCase() === upper ? "" : ref.refA,
+        refB: (ref.refB || "").trim().toUpperCase() === upper ? "" : ref.refB
+      };
+      const okClear = await upsertRecord(cleaned, activeFY);
+      if (okClear) {
+        clearedCount++;
+        remaining = remaining.map(r => r.refNo === cleaned.refNo ? cleaned : r);
+      }
+    }
+
+    setRecords(remaining);
     setForm({ ...EMPTY });
     setEditMode(false);
-    showToast("RECORD DELETED!");
+    showToast(clearedCount > 0
+      ? `RECORD DELETED! Cleared link on ${clearedCount} record(s).`
+      : "RECORD DELETED!");
   };
- 
+  
   const handleNew = () => { setForm({ ...EMPTY }); setEditMode(false); };
 
   const filtered = useMemo(() => records.filter(r => {
