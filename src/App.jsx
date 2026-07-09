@@ -507,6 +507,7 @@ function calculateSalesFields(record) {
 const shortage = qty - receivedWeight;
 const shortageAmount = Math.round(shortage * rate);
 const gunnyWeight = parseFloat(record.gunnyWeight) || 0;
+const gunnyAmount = Math.round(gunnyWeight * rate);
 const claim = parseFloat(record.claim) || 0;
   const cdRule = record.cdRule || "standard";
  
