@@ -5136,16 +5136,18 @@ const fyOf = (dateStr) => {
     </div>
 
   {/* SPLIT VIEW */}
-  <div style={{ width:"100vw", marginLeft:"calc(50% - 50vw)", display:"grid", gridTemplateColumns:"1fr 2.5fr", gap:12, height:"calc(100vh - 225px)", padding:"0 20px", boxSizing:"border-box" }}>
+  <div style={{ width:"100vw", marginLeft:"calc(50% - 50vw)", display:"grid", gridTemplateColumns:"1fr 1.8fr", gap:12, height:"calc(100vh - 225px)", padding:"0 20px", boxSizing:"border-box" }}>
 
       {/* LEFT — BANK TRANSACTIONS */}
       {(() => {
+     const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const q = norm(reconcileSearch);
         const bankFiltered = bankingData[selectedReconcileBank].filter(t => {
-         const matchSearch = !reconcileSearch ||
-         t.date.includes(reconcileSearch) ||
-         t.narration.toLowerCase().includes(reconcileSearch.toLowerCase()) ||
-         t.chqRef.toLowerCase().includes(reconcileSearch.toLowerCase()) ||
-         (reconcileMode === "pmt" ? t.withdrawalAmt.toString().includes(reconcileSearch) : t.depositAmt.toString().includes(reconcileSearch));
+          const matchSearch = !reconcileSearch ||
+            t.date.includes(reconcileSearch) ||
+            norm(t.narration).includes(q) ||
+            norm(t.chqRef).includes(q) ||
+            (reconcileMode === "pmt" ? t.withdrawalAmt.toString().includes(reconcileSearch) : t.depositAmt.toString().includes(reconcileSearch));
           const matchMode = reconcileMode === "pmt" ? t.withdrawalAmt > 0 : t.depositAmt > 0;
           return matchSearch && matchMode;
         });
