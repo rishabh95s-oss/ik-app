@@ -335,7 +335,6 @@ function userRowToRecord(r) {
   return {
     id: r.id,
     username: r.username,
-    password: r.password,
     role: r.role,
     tabs: r.tabs || [],
     allowedFys: r.allowed_fys || [],
@@ -346,7 +345,6 @@ function userRowToRecord(r) {
 function recordToUserRow(r) {
   const row = {
     username: r.username,
-    password: r.password,
     role: r.role,
     tabs: r.tabs || [],
     allowed_fys: r.allowedFys || []
@@ -451,6 +449,31 @@ export async function deleteBankTransaction(id) {
     .eq('id', id);
   if (error) { console.error('deleteBankTransaction:', error.message); return false; }
   return true;
+}
+
+// Delete all transactions for a bank on a given date (used by boundary-day replace on import)
+
+export async function deleteBankTransactionsByDate(bank, date) {
+  const { error } = await supabase
+    .from('bank_transactions')
+    .delete()
+    .eq('bank', bank)
+    .eq('date', date);
+  if (error) { console.error('deleteBankTransactionsByDate:', error.message); return false; }
+  return true;
+}
+
+// How many transactions on this bank+date carry a link (warn before wiping)
+
+export async function countLinkedOnDate(bank, date) {
+  const { count, error } = await supabase
+    .from('bank_transactions')
+    .select('*', { count: 'exact', head: true })
+    .eq('bank', bank)
+    .eq('date', date)
+    .neq('linked_ref_no', '');
+  if (error) { console.error('countLinkedOnDate:', error.message); return 0; }
+  return count || 0;
 }
 
 // ---- PMT LINKED SLOTS ----

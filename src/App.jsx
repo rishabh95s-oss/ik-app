@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { IMPORTED_DATA } from "./importedData.js";
-import { loadRecords, upsertRecord, deleteRecord, loadSalesFlash, replaceSalesFlash, loadPurchaseFlash, replacePurchaseFlash, loadSalesWorking, upsertWorkingRow, upsertWorkingBatch, deleteWorkingRow, loadParties, addParty, deleteParty, loadBrokers, addBroker, deleteBroker, loadDeliveries, addDelivery, deleteDelivery, loadClaimRules, upsertClaimRule, deleteClaimRule, loadAppUsers, upsertAppUser, deleteAppUser, loadBankTransactions, upsertBankTransactions, updateBankTransaction, deleteBankTransaction, renamePurchaseParty, renamePurchaseDeliveryAt, renameSalesWorkingParty, renameClaimRuleParty, countPurchasesByParty, countPurchasesByDeliveryAt, countSalesWorkingByParty, countClaimRulesByParty, loadPmtLinkedSlots, upsertPmtLinkedSlot, deletePmtLinkedSlot, loadPartyPans, updatePartyPan, updatePartyPanVerified, loadFinancialYears, createFinancialYear, loadLoanParties, addLoanParty, deleteLoanParty, updateLoanPartyPan, updateLoanPartyPanVerified, loadLoanBrokers, addLoanBroker, deleteLoanBroker, updateLoanBrokerPan, updateLoanBrokerPanVerified, createLoan, addLoanInterestEvent, addLoanBrokerageAccrual, loadLoanInterestEvents, loadActiveFixedLoans, updateLoanDueDate, loadLoanBrokerageAccruals, loadLoanBrokeragePayments, addLoanBrokeragePayment, deleteLoanTerm, loadLoansWithTerms, settleNonFixedLoan, deleteNonFixedLoan, loadBanks, addBank, deleteBank,  loadIgnoredSalesParties, addIgnoredSalesParty, deleteIgnoredSalesParty } from "./dataService.js";
+import { loadRecords, upsertRecord, deleteRecord, loadSalesFlash, replaceSalesFlash, loadPurchaseFlash, replacePurchaseFlash, loadSalesWorking, upsertWorkingRow, upsertWorkingBatch, deleteWorkingRow, loadParties, addParty, deleteParty, loadBrokers, addBroker, deleteBroker, loadDeliveries, addDelivery, deleteDelivery, loadClaimRules, upsertClaimRule, deleteClaimRule, loadAppUsers, upsertAppUser, deleteAppUser, loadBankTransactions, upsertBankTransactions, updateBankTransaction, deleteBankTransaction, renamePurchaseParty, renamePurchaseDeliveryAt, renameSalesWorkingParty, renameClaimRuleParty, countPurchasesByParty, countPurchasesByDeliveryAt, countSalesWorkingByParty, countClaimRulesByParty, loadPmtLinkedSlots, upsertPmtLinkedSlot, deletePmtLinkedSlot, loadPartyPans, updatePartyPan, updatePartyPanVerified, loadFinancialYears, createFinancialYear, loadLoanParties, addLoanParty, deleteLoanParty, updateLoanPartyPan, updateLoanPartyPanVerified, loadLoanBrokers, addLoanBroker, deleteLoanBroker, updateLoanBrokerPan, updateLoanBrokerPanVerified, createLoan, addLoanInterestEvent, addLoanBrokerageAccrual, loadLoanInterestEvents, loadActiveFixedLoans, updateLoanDueDate, loadLoanBrokerageAccruals, loadLoanBrokeragePayments, addLoanBrokeragePayment, deleteLoanTerm, loadLoansWithTerms, settleNonFixedLoan, deleteNonFixedLoan, loadBanks, addBank, deleteBank,  loadIgnoredSalesParties, addIgnoredSalesParty, deleteIgnoredSalesParty, deleteBankTransactionsByDate, countLinkedOnDate } from "./dataService.js";
 import { TableVirtuoso } from "react-virtuoso";
 import { supabase } from './supabaseClient.js';
 
@@ -3349,7 +3349,6 @@ const handlePasteBankData = async (bank) => {
   const pastedData = prompt(`Paste your ${bank} bank data here:\n(Copy from Excel and paste)`);
   if (!pastedData) return;
 
-  // Use correct parser for each bank
   let parsed = [];
   if (bank === 'HDFC') parsed = parseHDFCData(pastedData);
   else if (bank === 'SBI') parsed = parseSBIData(pastedData);
@@ -3360,39 +3359,108 @@ const handlePasteBankData = async (bank) => {
     return;
   }
 
-  // Add bank field to each transaction
+  // Comparable key for date ordering (handles DD-MM-YY and DD-MM-YYYY)
+  const toComparable = (dateStr) => {
+    const parts = String(dateStr || "").split('-');
+    if (parts.length !== 3) return "00000000";
+    let [d, m, y] = parts;
+    if (y.length === 2) y = "20" + y;
+    return y + m.padStart(2, '0') + d.padStart(2, '0');
+  };
+  const money = (n) => "₹" + Number(n).toLocaleString("en-IN", { maximumFractionDigits: 2 });
+
+  const existing = bankingData[bank] || [];
+  const pasteDates = parsed.map(t => toComparable(t.date)).filter(d => d !== "00000000");
+  if (pasteDates.length === 0) { showToast("Could not read dates from paste", "error"); return; }
+  const pasteMin = pasteDates.reduce((a, b) => a < b ? a : b);
+
+  let boundaryDate = null; // raw date string of the day to replace
+
+  if (existing.length > 0) {
+    const storedDates = existing.map(t => toComparable(t.date)).filter(d => d !== "00000000");
+    const storedMax = storedDates.reduce((a, b) => a > b ? a : b);
+
+    // 1. Reject wide overlaps outright
+    if (pasteMin < storedMax) {
+      showToast("Paste overlaps existing data. Start the paste on your last stored day.", "error");
+      return;
+    }
+
+    if (pasteMin === storedMax) {
+      boundaryDate = parsed.find(t => toComparable(t.date) === pasteMin)?.date;
+    }
+
+    // 2. Balance continuity check — BEFORE any confirm or delete
+    const sortedExisting = [...existing].sort((a, b) => {
+      const da = toComparable(a.date), db = toComparable(b.date);
+      if (da !== db) return da.localeCompare(db);
+      return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+    });
+
+    // Anchor on the last stored row NOT on the boundary day (that day gets replaced)
+    const anchorPool = boundaryDate
+      ? sortedExisting.filter(t => t.date !== boundaryDate)
+      : sortedExisting;
+
+    if (anchorPool.length > 0) {
+      const anchor = anchorPool[anchorPool.length - 1];
+      const first = parsed[0];
+      const expected = (parseFloat(anchor.closingBalance) || 0)
+                     + (parseFloat(first.depositAmt) || 0)
+                     - (parseFloat(first.withdrawalAmt) || 0);
+      const stated = parseFloat(first.closingBalance) || 0;
+
+      const matches = bank === "VASB"
+        ? Math.abs(Math.abs(expected) - Math.abs(stated)) < 0.01
+        : Math.abs(expected - stated) < 0.01;
+
+      if (!matches) {
+        const gap = stated - expected;
+        showToast(
+          `Chain break after ${anchor.date} (${money(anchor.closingBalance)}). ` +
+          `First pasted row should close at ${money(expected)}, statement says ${money(stated)} — ` +
+          `gap of ${money(Math.abs(gap))}. Missing transactions? Import cancelled.`,
+          "error"
+        );
+        return;
+      }
+    }
+
+    // 3. Boundary day confirmed and wiped only after validation passes
+    if (boundaryDate) {
+      const dayRows = existing.filter(t => t.date === boundaryDate).length;
+      const linkedCount = await countLinkedOnDate(bank, boundaryDate);
+      const msg = linkedCount > 0
+        ? `Re-importing ${boundaryDate} will delete its ${dayRows} stored row(s), including ${linkedCount} LINKED transaction(s). Those links will be lost.\n\nContinue?`
+        : `Re-importing ${boundaryDate} will replace its ${dayRows} stored row(s).\n\nContinue?`;
+      if (!confirm(msg)) return;
+
+      const okDel = await deleteBankTransactionsByDate(bank, boundaryDate);
+      if (!okDel) { showToast("Failed to clear boundary day — check connection", "error"); return; }
+    }
+  }
+
+  // Assign ascending createdAt so paste order becomes sort order
   const base = Date.now();
   const withBank = parsed.map((t, i) => ({ ...t, bank, createdAt: new Date(base + i).toISOString() }));
 
-  const existingTransactions = bankingData[bank];
+  const ok = await upsertBankTransactions(withBank);
+  if (!ok) { showToast("Failed to save — check connection", "error"); return; }
 
-  // Dedup fingerprint — same logic for all banks
-  const getFP = (t) => `${t.date.trim()}__${t.withdrawalAmt}__${t.depositAmt}__${t.closingBalance}`;
-  const existingFingerprints = new Set(existingTransactions.map(getFP));
-  const uniqueTransactions = withBank.filter(t => !existingFingerprints.has(getFP(t)));
+  setBankingData(prev => {
+    const kept = boundaryDate
+      ? (prev[bank] || []).filter(t => t.date !== boundaryDate)
+      : (prev[bank] || []);
+    return { ...prev, [bank]: [...kept, ...withBank] };
+  });
 
-  if (uniqueTransactions.length === 0) {
-    showToast("No new transactions (all duplicates)", "info");
-    return;
-  }
-
-  // Save to Supabase
-  const ok = await upsertBankTransactions(uniqueTransactions);
-  if (!ok) {
-    showToast("Failed to save — check connection", "error");
-    return;
-  }
-
-  setBankingData(prev => ({
-    ...prev,
-    [bank]: [...prev[bank], ...uniqueTransactions]
-  }));
-
-  const skipped = withBank.length - uniqueTransactions.length;
-  showToast(`${uniqueTransactions.length} new transactions added${skipped > 0 ? ` (${skipped} duplicates skipped)` : ""}`);
+  showToast(boundaryDate
+    ? `${withBank.length} transactions imported (${boundaryDate} replaced)`
+    : `${withBank.length} transactions imported`);
 };
 
 // Link bank transaction to Ref No
+
 const handleLinkBankTransaction = async (bankTransId, refNo, partyName) => {
   if (!refNo || !partyName) {
     showToast("Enter Ref No and Party Name", "error");
