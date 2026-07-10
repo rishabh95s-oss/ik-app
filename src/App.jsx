@@ -3874,10 +3874,11 @@ let cols;
     let html = `<style>
       @page { size: A4 landscape; margin: 8mm; }
       body { font-family: Arial, sans-serif; }
-      h2 { font-size: 14px; margin: 0 0 8px; }
-      table { width:100%; border-collapse: collapse; font-size: 8px; }
-      th, td { border: 1px solid #000; padding: 3px 4px; white-space: nowrap; }
+      h2 { font-size: 16px; margin: 0 0 8px; }
+      table { width:100%; border-collapse: collapse; font-size: 11px; table-layout: auto; }
+      th, td { border: 1px solid #000; padding: 4px 6px; }
       th { background: #eee; text-align: left; }
+      td { word-break: break-word; }
     </style>`;
     
     let subHead = "";
@@ -4047,10 +4048,11 @@ let cols;
     let html = `<style>
       @page { size: A4 landscape; margin: 8mm; }
       body { font-family: Arial, sans-serif; }
-      h2 { font-size: 14px; margin: 0 0 8px; }
-      table { width:100%; border-collapse: collapse; font-size: 8px; }
-      th, td { border: 1px solid #000; padding: 3px 4px; white-space: nowrap; }
+      h2 { font-size: 16px; margin: 0 0 8px; }
+      table { width:100%; border-collapse: collapse; font-size: 11px; table-layout: auto; }
+      th, td { border: 1px solid #000; padding: 4px 6px; }
       th { background: #eee; text-align: left; }
+      td { word-break: break-word; }
     </style>`;
     html += `<h2>${title} — ${rows.length} records</h2>${subHead}<table><thead><tr>`;
     cols.forEach(k => html += `<th>${label(k)}</th>`);
@@ -4103,13 +4105,14 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
     }
 
     const w = window.open('', '', 'height=700,width=1100');
-    let html = `<style>
+  let html = `<style>
       @page { size: A4 landscape; margin: 8mm; }
       body { font-family: Arial, sans-serif; }
-      h2 { font-size: 14px; margin: 0 0 8px; }
-      table { width:100%; border-collapse: collapse; font-size: 8px; }
-      th, td { border: 1px solid #000; padding: 3px 4px; white-space: nowrap; }
+      h2 { font-size: 16px; margin: 0 0 8px; }
+      table { width:100%; border-collapse: collapse; font-size: 11px; table-layout: auto; }
+      th, td { border: 1px solid #000; padding: 4px 6px; }
       th { background: #eee; text-align: left; }
+      td { word-break: break-word; }
     </style>`;
     html += `<h2>${mode === "party" ? "PARTYWISE" : "BROKERWISE"} SUMMARY — ${rows.length} records</h2>${subHead}<table><thead><tr>`;
     visibleCols.forEach(col => html += `<th>${col.label.toUpperCase()}</th>`);
