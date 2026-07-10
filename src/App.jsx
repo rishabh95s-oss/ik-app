@@ -1135,7 +1135,7 @@ const tdR = { padding:"6px 6px", color:"#cbd5e1", textAlign:"right", whiteSpace:
   return (
     <>
       <td style={tdL}>{trans.date}</td>
-      <td style={{ ...tdL, maxWidth:200, overflow:"hidden", textOverflow:"ellipsis" }}>{trans.narration}</td>
+     <td style={{ ...tdL, overflow:"hidden", textOverflow:"ellipsis" }}>{trans.narration}</td>
       <td style={{ ...tdL, fontWeight:600 }}>{trans.chqRef}</td>
       <td style={tdR}>₹{amount ? amount.toLocaleString() : "-"}</td>
      <td style={{ ...tdL, color: trans.linkedRefNo ? "#22c55e" : "#ef4444", fontWeight:700 }}>
@@ -2979,6 +2979,8 @@ const [selectedBankTransId, setSelectedBankTransId] = useState(null);
 const [selectedReconcileBank, setSelectedReconcileBank] = useState("HDFC");
 const [linkingModal, setLinkingModal] = useState(null);
 const [reconcileMode, setReconcileMode] = useState("pmt"); // "pmt" or "sales"
+const [reconcileSplit, setReconcileSplit] = useState(1); 
+const [reconcileNarrationWidth, setReconcileNarrationWidth] = useState(200);
 const [selectedSalesBills, setSelectedSalesBills] = useState([]); // For multi-select in modal
 const [salesLinkingModal, setSalesLinkingModal] = useState(null);
 const [unlinkSlotModal, setUnlinkSlotModal] = useState(null);
@@ -5157,7 +5159,10 @@ const fyOf = (dateStr) => {
     </div>
 
   {/* SPLIT VIEW */}
-  <div style={{ width:"100vw", marginLeft:"calc(50% - 50vw)", display:"grid", gridTemplateColumns:"1fr 1.8fr", gap:12, height:"calc(100vh - 225px)", padding:"0 20px", boxSizing:"border-box" }}>
+  <div
+    id="reconcileSplitContainer"
+    style={{ width:"100vw", marginLeft:"calc(50% - 50vw)", display:"grid", gridTemplateColumns:`${reconcileSplit}fr 6px 2.5fr`, gap:6, height:"calc(100vh - 225px)", padding:"0 20px", boxSizing:"border-box" }}>
+  
 
       {/* LEFT — BANK TRANSACTIONS */}
       {(() => {
@@ -5172,7 +5177,9 @@ const fyOf = (dateStr) => {
           const matchMode = reconcileMode === "pmt" ? t.withdrawalAmt > 0 : t.depositAmt > 0;
           return matchSearch && matchMode;
         });
-        const cols = reconcileMode === "pmt" ? BANK_TRANS_COLS_PMT : BANK_TRANS_COLS_SALES;
+        const baseCols = reconcileMode === "pmt" ? BANK_TRANS_COLS_PMT : BANK_TRANS_COLS_SALES;
+        const cols = baseCols.map(c => c.label === "Narration" ? { ...c, w: reconcileNarrationWidth } : c);
+        const colsWidth = cols.reduce((s, c) => s + c.w, 0);
         return (
        <div style={{ border:"1px solid #1e2a3a", display:"flex", flexDirection:"column", overflow:"hidden" }}>
             <div style={{ padding:"12px 16px", background:"#151b2a", borderBottom:"1px solid #1e2a3a", fontWeight:700, color:"#f59e0b", fontSize:12, flexShrink:0 }}>
@@ -5184,8 +5191,8 @@ const fyOf = (dateStr) => {
                 data={bankFiltered}
                 computeItemKey={(_, t) => t.id}
                 components={{
-                  Table: ({ children, style, ...rest }) => (
-                    <table {...rest} style={{ ...style, width:"100%", minWidth:BANK_TRANS_WIDTH, fontSize:10, borderCollapse:"separate", borderSpacing:0, tableLayout:"fixed" }}>
+               Table: ({ children, style, ...rest }) => (
+                    <table {...rest} style={{ ...style, width:"100%", minWidth:colsWidth, fontSize:10, borderCollapse:"separate", borderSpacing:0, tableLayout:"fixed" }}>
                       <colgroup>{cols.map((c, i) => <col key={i} style={{ width:c.w }} />)}</colgroup>
                       {children}
                     </table>
@@ -5197,11 +5204,31 @@ const fyOf = (dateStr) => {
                       style={{ ...style, borderBottom:"1px solid #1e2a3a", background: isSelected ? "#f59e0b33" : props["data-index"] % 2 === 0 ? "#0f1117" : "#151b2a", cursor:"pointer", outline: isSelected ? "2px solid #f59e0b" : "none" }} />;
                   },
                 }}
-                fixedHeaderContent={() => (
+            fixedHeaderContent={() => (
                   <tr style={{ background:"#151b2a" }}>
                     {cols.map((c, i) => (
-                      <th key={i} style={{ padding:"8px 6px", textAlign:c.align, color:"#64748b", fontWeight:700, whiteSpace:"nowrap", background:"#151b2a", borderRight: i < cols.length - 1 ? "1px solid #1e2a3a" : "none" }}>
+                      <th key={i} style={{ padding:"8px 6px", textAlign:c.align, color:"#64748b", fontWeight:700, whiteSpace:"nowrap", background:"#151b2a", borderRight: i < cols.length - 1 ? "1px solid #1e2a3a" : "none", position: c.label === "Narration" ? "relative" : undefined, userSelect: c.label === "Narration" ? "none" : undefined }}>
                         {c.label}
+                        {c.label === "Narration" && (
+                          <div
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              const startX = e.clientX;
+                              const startWidth = reconcileNarrationWidth;
+                              const onMove = (ev) => setReconcileNarrationWidth(Math.max(100, startWidth + (ev.clientX - startX)));
+                              const onUp = () => {
+                                document.removeEventListener("mousemove", onMove);
+                                document.removeEventListener("mouseup", onUp);
+                              };
+                              document.addEventListener("mousemove", onMove);
+                              document.addEventListener("mouseup", onUp);
+                            }}
+                            style={{ position:"absolute", right:0, top:0, width:"5px", height:"100%", cursor:"col-resize", background:"#f59e0b", opacity:0, transition:"opacity .2s" }}
+                            onMouseEnter={(e) => e.currentTarget.style.opacity = "0.8"}
+                            onMouseLeave={(e) => e.currentTarget.style.opacity = "0"}
+                          />
+                        )}
                       </th>
                     ))}
                   </tr>
@@ -5214,6 +5241,33 @@ const fyOf = (dateStr) => {
           </div>
         );
       })()}
+
+      {/* DRAG DIVIDER */}
+      <div
+        onMouseDown={(e) => {
+          e.preventDefault();
+          const container = document.getElementById("reconcileSplitContainer");
+          if (!container) return;
+          const rect = container.getBoundingClientRect();
+
+          const onMove = (ev) => {
+            const usable = rect.width - 40 - 6;
+            const leftPx = ev.clientX - rect.left - 20;
+            const ratio = leftPx / (usable - leftPx);
+            const clamped = Math.min(Math.max(ratio, 0.25), 4);
+            setReconcileSplit(clamped * 2.5);
+          };
+          const onUp = () => {
+            document.removeEventListener("mousemove", onMove);
+            document.removeEventListener("mouseup", onUp);
+          };
+          document.addEventListener("mousemove", onMove);
+          document.addEventListener("mouseup", onUp);
+        }}
+        style={{ cursor:"col-resize", background:"#1e2a3a", borderRadius:3, transition:"background .15s" }}
+        onMouseEnter={(e) => e.currentTarget.style.background = "#f59e0b"}
+        onMouseLeave={(e) => e.currentTarget.style.background = "#1e2a3a"}
+      />
 
       {/* RIGHT — PMT or SALES */}
       {reconcileMode === "pmt" ? (() => {
