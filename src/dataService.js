@@ -1,12 +1,36 @@
 import { supabase } from './supabaseClient.js';
 
+// Fetch all rows from a table, paginating past PostgREST's 1000-row cap.
+// buildQuery receives a fresh query builder and should apply .eq/.order etc, but NOT .range.
+async function fetchAll(table, buildQuery) {
+  const PAGE = 1000;
+  let all = [];
+  let from = 0;
+
+  while (true) {
+    let q = supabase.from(table).select('*');
+    if (buildQuery) q = buildQuery(q);
+    const { data, error } = await q.range(from, from + PAGE - 1);
+
+    if (error) { console.error(`fetchAll(${table}):`, error.message); return { data: null, error }; }
+    if (!data || data.length === 0) break;
+
+    all = all.concat(data);
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+
+  return { data: all, error: null };
+}
+
 // ---- PARTIES ----
 
 export async function loadParties() {
-  const { data, error } = await supabase.from('parties').select('party_name').order('party_name');
-  if (error) { console.error('loadParties:', error.message); return []; }
+  const { data, error } = await fetchAll('parties', q => q.order('party_name'));
+  if (error) return [];
   return data.map(r => r.party_name);
 }
+
 export async function addParty(name) {
   const { error } = await supabase.from('parties').insert({ party_name: name });
   if (error) { console.error('addParty:', error.message); return false; }
@@ -21,8 +45,8 @@ export async function deleteParty(name) {
 // Load party → { pan, verified } lookup: { party_name: { pan, verified } }
 
 export async function loadPartyPans() {
-  const { data, error } = await supabase.from('parties').select('party_name, pan, pan_verified');
-  if (error) { console.error('loadPartyPans:', error.message); return {}; }
+  const { data, error } = await fetchAll('parties', q => q.order('party_name'));
+  if (error) return {};
   return data.reduce((acc, r) => {
     acc[r.party_name] = { pan: r.pan || "", verified: !!r.pan_verified };
     return acc;
@@ -52,8 +76,8 @@ export async function updatePartyPan(partyName, pan) {
 // ---- BROKERS ----
 
 export async function loadBrokers() {
-  const { data, error } = await supabase.from('brokers').select('broker_name').order('broker_name');
-  if (error) { console.error('loadBrokers:', error.message); return []; }
+  const { data, error } = await fetchAll('brokers', q => q.order('broker_name'));
+  if (error) return [];
   return data.map(r => r.broker_name);
 }
 export async function addBroker(name) {
@@ -83,9 +107,10 @@ export async function createFinancialYear(startYear) {
 }
 
 // ---- DELIVERIES ----
+
 export async function loadDeliveries() {
-  const { data, error } = await supabase.from('deliveries').select('delivery_name').order('delivery_name');
-  if (error) { console.error('loadDeliveries:', error.message); return []; }
+  const { data, error } = await fetchAll('deliveries', q => q.order('delivery_name'));
+  if (error) return [];
   return data.map(r => r.delivery_name);
 }
 export async function addDelivery(name) {
@@ -127,8 +152,10 @@ function purchaseRowToRecord(r) {
 }
 
 export async function loadRecords(financialYear) {
-  const { data, error } = await supabase.from('purchases').select('*').eq('financial_year', financialYear).order('ref_no');
-  if (error) { console.error('loadRecords:', error.message); return []; }
+  const { data, error } = await fetchAll('purchases', q =>
+    q.eq('financial_year', financialYear).order('ref_no')
+  );
+  if (error) return [];
   return data.map(purchaseRowToRecord);
 }
 
@@ -187,8 +214,10 @@ function flashRowToRecord(r) {
 }
 
 export async function loadSalesFlash(financialYear) {
-  const { data, error } = await supabase.from('sales_flash').select('*').eq('financial_year', financialYear).order('ref_no');
-  if (error) { console.error('loadSalesFlash:', error.message); return []; }
+  const { data, error } = await fetchAll('sales_flash', q =>
+    q.eq('financial_year', financialYear).order('ref_no')
+  );
+  if (error) return [];
   return data.map(flashRowToRecord);
 }
 
@@ -260,11 +289,12 @@ function recordToWorkingRow(r) {
 }
 
 export async function loadSalesWorking(financialYear) {
-  const { data, error } = await supabase.from('sales_working').select('*').eq('financial_year', financialYear).order('ref_no');
-  if (error) { console.error('loadSalesWorking:', error.message); return []; }
+  const { data, error } = await fetchAll('sales_working', q =>
+    q.eq('financial_year', financialYear).order('ref_no')
+  );
+  if (error) return [];
   return data.map(workingRowToRecord);
 }
-
 // Save one working row (used by save-on-blur)
 export async function upsertWorkingRow(record, financialYear) {
   const row = recordToWorkingRow(record);
@@ -414,12 +444,10 @@ function recordToBankTransRow(r) {
 }
 
 export async function loadBankTransactions(bank) {
-  const { data, error } = await supabase
-    .from('bank_transactions')
-    .select('*')
-    .eq('bank', bank)
-    .order('created_at', { ascending: true })
-   if (error) { console.error('loadBankTransactions:', error.message); return []; }
+  const { data, error } = await fetchAll('bank_transactions', q =>
+    q.eq('bank', bank).order('created_at', { ascending: true })
+  );
+  if (error) return [];
   return data.map(bankTransRowToRecord);
 }
 
@@ -519,8 +547,10 @@ function purchaseFlashRowToRecord(r) {
 }
 
 export async function loadPurchaseFlash(financialYear) {
-  const { data, error } = await supabase.from('purchase_flash').select('*').eq('financial_year', financialYear).order('ref_no');
-  if (error) { console.error('loadPurchaseFlash:', error.message); return []; }
+  const { data, error } = await fetchAll('purchase_flash', q =>
+    q.eq('financial_year', financialYear).order('ref_no')
+  );
+  if (error) return [];
   return data.map(purchaseFlashRowToRecord);
 }
 
