@@ -4,7 +4,7 @@ import { loadRecords, upsertRecord, deleteRecord, loadSalesFlash, replaceSalesFl
 import { TableVirtuoso } from "react-virtuoso";
 import { supabase } from './supabaseClient.js';
 
-function ClaimManagementTab({ claimRules: externalRules, setClaimRules: setExternalRules }) {
+function ClaimManagementTab({ claimRules: externalRules, setClaimRules: setExternalRules, activeFY }) {
   const [claims, setClaims] = useState([]);
   const [newParty, setNewParty] = useState('');
   const [newClaimRule, setNewClaimRule] = useState('copy');
@@ -27,14 +27,14 @@ useEffect(() => {
     }
 
     try {
-      const salesRows = await loadSalesWorking();
+      const salesRows = await loadSalesWorking(activeFY);
       const uniqueParties = [...new Set(salesRows.map(s => s.partyName).filter(Boolean))].sort();
       setSalesParties(uniqueParties);
     } catch (e) {
       console.error('❌ Error loading sales parties:', e);
     }
   })();
-}, []);
+}, [activeFY]);
   
 useEffect(() => {
   if (claims.length === 0) return;
@@ -7519,7 +7519,7 @@ const handleUnignore = async (party) => {
 {view === "claimManagement" && (
   <div>
     <h2 style={{ fontSize:20, fontWeight:800, color:"#f1f5f9", marginBottom:20 }}>📋 CLAIM MANAGEMENT</h2>
-    <ClaimManagementTab claimRules={claimRules} setClaimRules={setClaimRules} />
+    <ClaimManagementTab claimRules={claimRules} setClaimRules={setClaimRules} activeFY={activeFY} />
   </div>
 )}
       
