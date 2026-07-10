@@ -503,17 +503,21 @@ function calculateSalesFields(record) {
   const bankPmt2 = parseFloat(record.bankPmt2) || 0;
   const bankPmt3 = parseFloat(record.bankPmt3) || 0;
 
-  const grossAmt = Math.round(qty * rate);
+ const grossAmt = Math.round(qty * rate);
 const shortage = qty - receivedWeight;
 const shortageAmount = Math.round(shortage * rate);
 const gunnyWeight = parseFloat(record.gunnyWeight) || 0;
 const gunnyAmount = Math.round(gunnyWeight * rate);
 const claim = parseFloat(record.claim) || 0;
   const cdRule = record.cdRule || "standard";
- 
-  const cd = cdRule === "gross"
-    ? Math.round((receivedWeight * rate) * cdPct / 100)
-    : Math.round(((receivedWeight * rate) - claim) * cdPct / 100);
+  const storedCd = parseFloat(record.cd);
+
+  // Honour a manually-entered CD; otherwise derive it from CD%
+  const cd = (!isNaN(storedCd) && storedCd !== 0)
+    ? storedCd
+    : (cdRule === "gross"
+        ? Math.round((receivedWeight * rate) * cdPct / 100)
+        : Math.round(((receivedWeight * rate) - claim) * cdPct / 100));
 
   const netAmt = grossAmt - shortageAmount - claim - cd - tdsReceived - gunnyAmount;
   const totalPaid = bankPmt1 + bankPmt2 + bankPmt3;
@@ -690,7 +694,7 @@ const SalesWorkingCells = React.memo(function SalesWorkingCells({ rec, onUpdate,
 </td>
      
    <td style={tdEdit}>
-  <input type="number" value={calculated.cd}
+  <input type="number" value={rec.cd}
     onChange={(e) => {
       const cd = parseFloat(e.target.value) || 0;
       const cdPct = rec.receivedWeight > 0 ? (cd * 100) / (rec.rate * rec.receivedWeight) : 0;
@@ -1237,7 +1241,7 @@ const SALES_SUMMARY_COLS = [
   { key:"pendingAmt",     label:"Pending",      align:"right", type:"money", calc:true },
   { key:"days",           label:"Days",         align:"right", type:"num",   calc:true },
 ];
-const SALES_SUMMARY_TOTAL_KEYS = new Set(["tdsReceived","netAmt","bankPmt1","bankPmt2","bankPmt3"]);
+const SALES_SUMMARY_TOTAL_KEYS = new Set(["tdsReceived","netAmt","bankPmt1","bankPmt2","bankPmt3","pendingAmt"]);
 
 const salesColValue = (col, rec, calc) => col.calc ? calc[col.key] : rec[col.key];
 
@@ -3801,13 +3805,25 @@ const handleDeleteEntry = async () => {
   
   const handleNew = () => { setForm({ ...EMPTY }); setEditMode(false); };
 
-  const filtered = useMemo(() => records.filter(r => {
-    const s = search.toLowerCase();
-    const matchSearch = !s || Object.values(r).some(v => String(v).toLowerCase().includes(s));
-    const matchParty = !filterParty || (filterParty === "__BLANK__" ? !(r.partyName || "").trim() : r.partyName === filterParty);
-    const matchBroker = !filterBroker || (filterBroker === "__BLANK__" ? !(r.brokerName || "").trim() : r.brokerName === filterBroker);
-    return matchSearch && matchParty && matchBroker;
-  }), [records, search, filterParty, filterBroker]);
+const filtered = useMemo(() => {
+    const parseRef = (ref) => {
+      const s = String(ref || "").trim();
+      const m = s.match(/^(\d+)(.*)$/);
+      return m ? { num: parseInt(m[1], 10), suf: m[2].toUpperCase() } : { num: Infinity, suf: s.toUpperCase() };
+    };
+    return records
+      .filter(r => {
+        const s = search.toLowerCase();
+        const matchSearch = !s || Object.values(r).some(v => String(v).toLowerCase().includes(s));
+        const matchParty = !filterParty || (filterParty === "__BLANK__" ? !(r.partyName || "").trim() : r.partyName === filterParty);
+        const matchBroker = !filterBroker || (filterBroker === "__BLANK__" ? !(r.brokerName || "").trim() : r.brokerName === filterBroker);
+        return matchSearch && matchParty && matchBroker;
+      })
+      .sort((a, b) => {
+        const pa = parseRef(a.refNo), pb = parseRef(b.refNo);
+        return pa.num !== pb.num ? pa.num - pb.num : pa.suf.localeCompare(pb.suf);
+      });
+  }, [records, search, filterParty, filterBroker]);
   
   const fmt = (n) => n !== undefined && n !== null && !isNaN(n) ? Number(n).toLocaleString("en-IN") : "—";
   const fmtDate = (d) => d ? d.split("-").reverse().join("-") : "";
@@ -4073,7 +4089,9 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
       return v || "";
     };
 
-    const totalFor = (key) => rows.reduce((s, { r, c }) => s + (key === "netAmt" ? (c.netAmt || 0) : (parseFloat(r[key]) || 0)), 0);
+    const CALC_KEYS = new Set(["netAmt", "pendingAmt", "shortageAmount", "gunnyAmount"]);
+    const totalFor = (key) => rows.reduce((s, { r, c }) =>
+      s + (CALC_KEYS.has(key) ? (parseFloat(c[key]) || 0) : (parseFloat(r[key]) || 0)), 0);
 
     let subHead = "";
     if (mode === "party") {
@@ -5196,9 +5214,17 @@ const fyOf = (dateStr) => {
 
       {/* RIGHT — PMT or SALES */}
       {reconcileMode === "pmt" ? (() => {
-        const pmtFiltered = filtered.filter(r =>
-          !reconcileSearch || r.partyName.toLowerCase().includes(reconcileSearch.toLowerCase())
-        );
+        const parseRefPmt = (ref) => {
+          const s = String(ref || "").trim();
+          const m = s.match(/^(\d+)(.*)$/);
+          return m ? { num: parseInt(m[1], 10), suf: m[2].toUpperCase() } : { num: Infinity, suf: s.toUpperCase() };
+        };
+        const pmtFiltered = filtered
+          .filter(r => !reconcileSearch || r.partyName.toLowerCase().includes(reconcileSearch.toLowerCase()))
+          .sort((a, b) => {
+            const pa = parseRefPmt(a.refNo), pb = parseRefPmt(b.refNo);
+            return pa.num !== pb.num ? pa.num - pb.num : pa.suf.localeCompare(pb.suf);
+          });
         return (
           <div style={{ border:"1px solid #1e2a3a", display:"flex", flexDirection:"column", overflow:"hidden" }}>
             <div style={{ padding:"12px 16px", background:"#151b2a", borderBottom:"1px solid #1e2a3a", fontWeight:700, color:"#f59e0b", fontSize:12, flexShrink:0 }}>
@@ -5253,11 +5279,21 @@ const fyOf = (dateStr) => {
           </div>
         );
       })() : (() => {
-        const salesFiltered = salesWorkingData.filter(rec =>
-          !reconcileSearchSales ||
-          rec.refNo.toString().includes(reconcileSearchSales) ||
-          rec.partyName.toLowerCase().includes(reconcileSearchSales.toLowerCase())
-        );
+      const parseRefRec = (ref) => {
+          const s = String(ref || "").trim();
+          const m = s.match(/^(\d+)(.*)$/);
+          return m ? { num: parseInt(m[1], 10), suf: m[2].toUpperCase() } : { num: Infinity, suf: s.toUpperCase() };
+        };
+        const salesFiltered = salesWorkingData
+          .filter(rec =>
+            !reconcileSearchSales ||
+            rec.refNo.toString().includes(reconcileSearchSales) ||
+            rec.partyName.toLowerCase().includes(reconcileSearchSales.toLowerCase())
+          )
+          .sort((a, b) => {
+            const pa = parseRefRec(a.refNo), pb = parseRefRec(b.refNo);
+            return pa.num !== pb.num ? pa.num - pb.num : pa.suf.localeCompare(pb.suf);
+          });
         return (
           <div style={{ border:"1px solid #1e2a3a", display:"flex", flexDirection:"column", overflow:"hidden" }}>
             <div style={{ padding:"12px 16px", background:"#151b2a", borderBottom:"1px solid #1e2a3a", fontWeight:700, color:"#f59e0b", fontSize:12, flexShrink:0, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
@@ -6561,7 +6597,9 @@ gunnyWeight: hasGunny(salesRec) ? salesRec.gunnyWeight : (parseFloat(dataRec.gun
         });
       });
 
-      const totalFor = (key) => rowsWithCalc.reduce((s, { r, c }) => s + (key === "netAmt" ? (c.netAmt || 0) : (parseFloat(r[key]) || 0)), 0);
+     const CALC_KEYS = new Set(["netAmt", "pendingAmt", "shortageAmount", "gunnyAmount"]);
+      const totalFor = (key) => rowsWithCalc.reduce((s, { r, c }) =>
+        s + (CALC_KEYS.has(key) ? (parseFloat(c[key]) || 0) : (parseFloat(r[key]) || 0)), 0);
 
       const rows = rowsWithCalc.map(x => x.r);
 
