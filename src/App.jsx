@@ -36,6 +36,8 @@ useEffect(() => {
   })();
 }, [activeFY]);
   
+
+
 useEffect(() => {
   if (claims.length === 0) return;
 
@@ -2981,6 +2983,7 @@ const [linkingModal, setLinkingModal] = useState(null);
 const [reconcileMode, setReconcileMode] = useState("pmt"); // "pmt" or "sales"
 const [reconcileSplit, setReconcileSplit] = useState(1); 
 const [reconcileNarrationWidth, setReconcileNarrationWidth] = useState(200);
+const [reconcileFromDate, setReconcileFromDate] = useState("");
 const [selectedSalesBills, setSelectedSalesBills] = useState([]); // For multi-select in modal
 const [salesLinkingModal, setSalesLinkingModal] = useState(null);
 const [unlinkSlotModal, setUnlinkSlotModal] = useState(null);
@@ -3588,10 +3591,22 @@ useEffect(() => {
   })();
 }, [activeFY, currentUser]);
   
-const [view, setView] = useState("entry");
+useEffect(() => {
+  const startYear = parseInt(activeFY.split("-")[0], 10);
+  if (!isNaN(startYear)) setReconcileFromDate(`${startYear}-04-01`);
+}, [activeFY]);
+
+useEffect(() => {
+  if (!activeFY) return;
+  const startYear = parseInt(activeFY.split("-")[0], 10);
+  if (!isNaN(startYear)) setBankFromDate(`${startYear}-04-01`);
+}, [activeFY]);
+
+  const [view, setView] = useState("entry");
   const [form, setForm] = useState({ ...EMPTY });
   const [editMode, setEditMode] = useState(false);
   const [search, setSearch] = useState("");
+  const [bankFromDate, setBankFromDate] = useState("");
   const [filterParty, setFilterParty] = useState("");
   const [filterBroker, setFilterBroker] = useState("");
   const [toast, setToast] = useState(null);
@@ -4959,14 +4974,25 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
     prevBalance = calculatedCB;
   }
 
-  // 2. Filter only for display
-  const filtered = full.filter(t => !partyFilterBank ||
-    t.date.includes(partyFilterBank) ||
-    t.narration.toLowerCase().includes(partyFilterBank.toLowerCase()) ||
-     t.chqRef.toLowerCase().includes(partyFilterBank.toLowerCase()) ||
-    t.withdrawalAmt.toString().includes(partyFilterBank) ||
-    t.depositAmt.toString().includes(partyFilterBank)
-  );
+// 2. Filter only for display
+  const toCompBank = (dateStr) => {
+    const p = String(dateStr || "").split('-');
+    if (p.length !== 3) return "00000000";
+    let [d, m, y] = p;
+    if (y.length === 2) y = "20" + y;
+    return y + m.padStart(2, '0') + d.padStart(2, '0');
+  };
+  const fromCompBank = bankFromDate ? bankFromDate.replace(/-/g, '') : "";
+  const filtered = full.filter(t => {
+    const matchText = !partyFilterBank ||
+      t.date.includes(partyFilterBank) ||
+      t.narration.toLowerCase().includes(partyFilterBank.toLowerCase()) ||
+      t.chqRef.toLowerCase().includes(partyFilterBank.toLowerCase()) ||
+      t.withdrawalAmt.toString().includes(partyFilterBank) ||
+      t.depositAmt.toString().includes(partyFilterBank);
+    const matchDate = !fromCompBank || toCompBank(t.date) >= fromCompBank;
+    return matchText && matchDate;
+  });
 
   // Compute FY (e.g. "2026-27") from a transaction date
 const fyOf = (dateStr) => {
@@ -5169,21 +5195,37 @@ const fyOf = (dateStr) => {
      const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
         const q = norm(reconcileSearch);
         const bankFiltered = bankingData[selectedReconcileBank].filter(t => {
-          const matchSearch = !reconcileSearch ||
+     const matchSearch = !reconcileSearch ||
             t.date.includes(reconcileSearch) ||
             norm(t.narration).includes(q) ||
             norm(t.chqRef).includes(q) ||
             (reconcileMode === "pmt" ? t.withdrawalAmt.toString().includes(reconcileSearch) : t.depositAmt.toString().includes(reconcileSearch));
           const matchMode = reconcileMode === "pmt" ? t.withdrawalAmt > 0 : t.depositAmt > 0;
-          return matchSearch && matchMode;
+          const toComp = (dateStr) => {
+            const p = String(dateStr || "").split('-');
+            if (p.length !== 3) return "00000000";
+            let [d, m, y] = p;
+            if (y.length === 2) y = "20" + y;
+            return y + m.padStart(2, '0') + d.padStart(2, '0');
+          };
+          const fromComp = reconcileFromDate ? reconcileFromDate.replace(/-/g, '') : "";
+          const matchDate = !fromComp || toComp(t.date) >= fromComp;
+          return matchMode && matchSearch && matchDate;
         });
         const baseCols = reconcileMode === "pmt" ? BANK_TRANS_COLS_PMT : BANK_TRANS_COLS_SALES;
         const cols = baseCols.map(c => c.label === "Narration" ? { ...c, w: reconcileNarrationWidth } : c);
         const colsWidth = cols.reduce((s, c) => s + c.w, 0);
         return (
        <div style={{ border:"1px solid #1e2a3a", display:"flex", flexDirection:"column", overflow:"hidden" }}>
-            <div style={{ padding:"12px 16px", background:"#151b2a", borderBottom:"1px solid #1e2a3a", fontWeight:700, color:"#f59e0b", fontSize:12, flexShrink:0 }}>
-              BANK TRANSACTIONS ({selectedReconcileBank})
+            <div style={{ padding:"12px 16px", background:"#151b2a", borderBottom:"1px solid #1e2a3a", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"space-between", gap:10 }}>
+              <span style={{ fontWeight:700, color:"#f59e0b", fontSize:12 }}>BANK TRANSACTIONS ({selectedReconcileBank})</span>
+              <input
+                type="date"
+                value={reconcileFromDate}
+                onChange={(e) => setReconcileFromDate(e.target.value)}
+                title="Show bank transactions from this date onward"
+                style={{ background:"#0f1420", border:"1px solid #1e2a3a", borderRadius:6, padding:"4px 8px", color:"#e2e8f0", fontSize:11, fontWeight:600 }}
+              />
             </div>
             <div style={{ flex:1, overflowX:"auto", overflowY:"hidden" }}>
               <TableVirtuoso
