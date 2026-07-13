@@ -4335,7 +4335,12 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
             background: #fff !important;
             box-shadow: none !important;
           }
-          html, body { background: #fff !important; }
+      html, body {
+            background: #fff !important;
+            height: auto !important;
+            min-height: 0 !important;
+            overflow: hidden !important;
+          }
           @page { size: A5; margin: 2mm; }
         }
       `}</style>
