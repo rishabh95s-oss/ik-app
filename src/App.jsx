@@ -1358,6 +1358,7 @@ function AutoComplete({ name, value, onChange, options, placeholder, style }) {
   const [q, setQ] = useState(value || "");
   const ref = useRef();
 
+  // Keep the displayed text in sync with the committed value (e.g. on edit-load / clear)
   useEffect(() => { setQ(value || ""); }, [value]);
 
   const filtered = useMemo(() => {
@@ -1365,18 +1366,53 @@ function AutoComplete({ name, value, onChange, options, placeholder, style }) {
     return options.filter(o => o.toLowerCase().includes(q.toLowerCase())).slice(0, 10);
   }, [q, options]);
 
+  // Commit the typed text only if it exactly matches a list option (case-insensitive);
+  // empty commits as "" (valid for optional fields); otherwise revert to last committed value.
+  const commitOrRevert = () => {
+    const typed = q.trim();
+    if (typed === "") {
+      if (value !== "") onChange({ target: { name, value: "" } });
+      setQ("");
+      return;
+    }
+    const match = options.find(o => o.toLowerCase() === typed.toLowerCase());
+    if (match) {
+      if (match !== value) onChange({ target: { name, value: match } });
+      setQ(match); // snap to canonical spelling
+    } else {
+      setQ(value || ""); // revert — typed text was not a valid pick
+    }
+  };
+
+  // Pick an option from the dropdown = commit
+  const pick = (o) => {
+    setQ(o);
+    onChange({ target: { name, value: o } });
+    setOpen(false);
+  };
+
   useEffect(() => {
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) {
+        setOpen(false);
+        commitOrRevert();
+      }
+    };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, []);
+  });
 
   return (
     <div ref={ref} style={{ position:"relative" }}>
       <input
         value={q}
-        onChange={e => { setQ(e.target.value); onChange({ target:{ name, value:e.target.value } }); setOpen(true); }}
+        onChange={e => { setQ(e.target.value); setOpen(true); }}  // typing filters only — does NOT commit
         onFocus={() => setOpen(true)}
+        onBlur={commitOrRevert}
+        onKeyDown={e => {
+          if (e.key === "Enter") { e.preventDefault(); commitOrRevert(); setOpen(false); }
+          if (e.key === "Escape") { setQ(value || ""); setOpen(false); }
+        }}
         placeholder={placeholder}
         style={style}
         autoComplete="off"
@@ -1384,7 +1420,7 @@ function AutoComplete({ name, value, onChange, options, placeholder, style }) {
       {open && filtered.length > 0 && (
         <div style={{ position:"absolute", top:"100%", left:0, right:0, background:"#1a2236", border:"1px solid #2a3a50", borderRadius:8, zIndex:1000, maxHeight:200, overflowY:"auto", boxShadow:"0 8px 24px rgba(0,0,0,.5)" }}>
           {filtered.map(o => (
-            <div key={o} onMouseDown={() => { setQ(o); onChange({ target:{ name, value:o } }); setOpen(false); }}
+            <div key={o} onMouseDown={() => pick(o)}
               style={{ padding:"9px 14px", cursor:"pointer", fontSize:13, color:"#cbd5e1", borderBottom:"1px solid #0f1117" }}
               onMouseEnter={e => e.target.style.background="#2a3a50"}
               onMouseLeave={e => e.target.style.background="transparent"}>
@@ -3791,6 +3827,26 @@ const hasBlankBroker = useMemo(() => {
         return;
       }
     }
+
+    // Guard: party required + must exist; broker/delivery optional but must exist if filled
+    const inList = (val, list) => list.some(x => x.toLowerCase() === (val || "").trim().toLowerCase());
+    if (!form.partyName.trim()) {
+      showToast("Party Name is required", "error");
+      return;
+    }
+    if (!inList(form.partyName, parties)) {
+      showToast(`Party "${form.partyName.trim()}" is not in the list. Add it in Manage first.`, "error");
+      return;
+    }
+    if (form.brokerName.trim() && !inList(form.brokerName, brokers)) {
+      showToast(`Broker "${form.brokerName.trim()}" is not in the list. Add it in Manage first.`, "error");
+      return;
+    }
+    if (form.deliveryAt.trim() && !inList(form.deliveryAt, deliveries)) {
+      showToast(`Delivery "${form.deliveryAt.trim()}" is not in the list. Add it in Manage first.`, "error");
+      return;
+    }
+
     const tds = calcTDS(form, records);
    const cdRule = claimRules.find(r => r.partyName === form.deliveryAt)?.cdRule || "standard";
    const c = calcAll(form, tds, cdRule);
