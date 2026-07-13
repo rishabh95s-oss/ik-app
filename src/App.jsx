@@ -435,6 +435,82 @@ function calcAll(f, autoTDS = 0, cdRule = "standard") {
  return { shortage: K, halfKgQty: M, gunnyDeduct: G, netQty: N, netAmt1: O, cdAmt: Q, netAmt: V, brokerageAmt: X, tds: Y, finalAmt: Z, balance: AJ, partyBillAmt: AK };
 }
 
+// Compute the surplus-distribution plan for a linked cluster.
+// Pure — no writes. Returns { ok, error, source, entries, summary } where
+// entries = [{ refNo, slot, amount, bankName, bankDate }] to be written.
+function computeAdjustPlan(cluster, sourceRefNo) {
+  const clean = (r) => ({
+    ...r,
+    _finalAmt: parseFloat(r._finalAmt) || 0,
+    a1: parseFloat(r.bankAmt1) || 0, a2: parseFloat(r.bankAmt2) || 0, a3: parseFloat(r.bankAmt3) || 0,
+  });
+
+  const members = cluster.map(clean);
+  const source = members.find(m => m.refNo === sourceRefNo);
+  if (!source) return { ok: false, error: "Source ref not found in cluster" };
+
+  // Source surplus = payments − owed (only positive means overpaid)
+  const sourcePaid = source.a1 + source.a2 + source.a3;
+  let surplus = sourcePaid - source._finalAmt;
+  if (surplus <= 0) return { ok: false, error: "No surplus on this ref" };
+
+  // First empty slot (1/2/3) on a member, or 0 if none
+  const emptySlot = (m) => (m.a1 === 0 ? 1 : m.a2 === 0 ? 2 : m.a3 === 0 ? 3 : 0);
+
+  // Original payment date = the source slot that holds the real (positive) payment.
+  // Use the first positive slot's date.
+  const srcDate = source.a1 > 0 ? source.bankDate1 : source.a2 > 0 ? source.bankDate2 : source.bankDate3;
+
+  // Receivers = other members with pending > 0, in numeric refNo order
+  const parseRef = (ref) => {
+    const s = String(ref || "").trim();
+    const m = s.match(/^(\d+)(.*)$/);
+    return m ? { num: parseInt(m[1], 10), suf: m[2].toUpperCase() } : { num: Infinity, suf: s.toUpperCase() };
+  };
+  const receivers = members
+    .filter(m => m.refNo !== sourceRefNo)
+    .map(m => ({ m, pending: m._finalAmt - (m.a1 + m.a2 + m.a3) }))
+    .filter(x => x.pending > 0)
+    .sort((a, b) => {
+      const pa = parseRef(a.m.refNo), pb = parseRef(b.m.refNo);
+      return pa.num !== pb.num ? pa.num - pb.num : pa.suf.localeCompare(pb.suf);
+    });
+
+  if (receivers.length === 0) return { ok: false, error: "No linked refs with pending balance to receive the surplus" };
+
+  const entries = [];
+  let remaining = surplus;
+  const totalToDistribute = receivers.reduce((s, x) => s + x.pending, 0);
+  const distributable = Math.min(surplus, totalToDistribute);
+
+  for (const { m, pending } of receivers) {
+    if (remaining <= 0) break;
+    const take = Math.min(pending, remaining);
+    const slot = emptySlot(m);
+    if (slot === 0) return { ok: false, error: `Ref ${m.refNo} has no empty slot — cannot distribute` };
+    entries.push({ refNo: m.refNo, slot, amount: take, bankName: `ADJUST:${sourceRefNo}`, bankDate: srcDate });
+    remaining -= take;
+  }
+
+  // Source out-entry: negative of what was actually distributed
+  const outSlot = emptySlot(source);
+  if (outSlot === 0) return { ok: false, error: `Source ref ${sourceRefNo} has no empty slot for the adjustment` };
+  // bankName on source lists the first receiver (or a generic tag if multiple)
+  const firstReceiver = entries[0]?.refNo || "";
+  entries.push({ refNo: sourceRefNo, slot: outSlot, amount: -distributable, bankName: `ADJUST:${firstReceiver}`, bankDate: srcDate });
+
+  const summary = {
+    source: sourceRefNo,
+    surplus,
+    distributed: distributable,
+    leftover: surplus - distributable, // surplus that couldn't be placed (receivers didn't need it all)
+    lines: entries.map(e => `${e.refNo}: slot ${e.slot} = ${e.amount >= 0 ? "+" : ""}${e.amount}`)
+  };
+
+  return { ok: true, source: sourceRefNo, entries, summary };
+}
+
+
 // Recompute purchase TDS + calcAll (with correct cdRule) for every bill of the
 // affected parties, against the full record set. Persists per `mode`:
 //   "all"     → save every affected bill
@@ -1433,6 +1509,212 @@ function AutoComplete({ name, value, onChange, options, placeholder, style }) {
   );
 }
 
+function HisabReceipt({ rec, calcAll }) {
+  const c = calcAll(rec, rec._tds || 0);
+  const h = (n) => n !== undefined && n !== null && !isNaN(n) ? Math.round(Number(n)).toString() : "0";
+  const fmtDate = (d) => d ? d.split("-").reverse().join("-") : "";
+  const rh = (pt) => ({ height: Math.round(pt * 0.74) + "px" });
+  const fs = (pt) => Math.round(pt * 0.72) + "px";
+  const thin = "1px solid #000";
+  const hair = "1px solid #aaa";
+  
+  const slotLabel = (amt, bankName) => {
+    const a = parseFloat(amt) || 0;
+    if (a === 0) return "";
+    if ((bankName || "").startsWith("ADJUST:")) {
+      const otherRef = bankName.split(":")[1] || "";
+      return a < 0 ? `ADJ TO ${otherRef}` : `ADJ FROM ${otherRef}`;
+    }
+    return "PAID FROM  " + (bankName || "");
+  };
+  const slotHasValue = (amt) => (parseFloat(amt) || 0) !== 0;
+
+
+  return (
+    <div className="hisab-page" style={{ background:"#fff", color:"#000", width:496, margin:"0 auto", fontFamily:"Arial,sans-serif" }}>
+      <table style={{ width:"100%", borderCollapse:"collapse", tableLayout:"fixed" }}>
+        <colgroup>
+          <col style={{ width:"12.8%" }} />
+          <col style={{ width:"15.7%" }} />
+          <col style={{ width:"13.5%" }} />
+          <col style={{ width:"18.1%" }} />
+          <col style={{ width:"23.4%" }} />
+          <col style={{ width:"16.5%" }} />
+        </colgroup>
+        <tbody>
+
+          <tr style={rh(33.6)}>
+            <td colSpan={6} style={{ fontSize:fs(18), fontWeight:"bold", textAlign:"center", verticalAlign:"middle", padding:"2px 4px", borderTop:thin, borderLeft:thin, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden", color:"#003d76" }}>I K ENTERPRISES</td>
+          </tr>
+          <tr style={rh(22.2)}>
+            <td colSpan={6} style={{ fontSize:fs(10), fontWeight:"bold", textAlign:"center", verticalAlign:"middle", padding:"1px", letterSpacing:"1px", borderLeft:thin, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden", color:"#003d76" }}>GENRAL MERCHANT AND COMMISION AGENT</td>
+          </tr>
+          <tr style={rh(21.6)}>
+            <td colSpan={6} style={{ fontSize:fs(11), fontWeight:"bold", textAlign:"center", verticalAlign:"middle", padding:"1px 0 3px", borderLeft:thin, borderRight:thin, borderBottom:thin , whiteSpace:"nowrap", overflow:"hidden", color:"#003d76" }}>18, NEW ANAJ MANDI,SANYOGITAGANJ, INDORE, 452001</td>
+          </tr>
+          <tr style={rh(43.2)}>
+            <td colSpan={6} style={{ fontSize:fs(19), fontWeight:"bold", fontStyle:"italic", textAlign:"center", verticalAlign:"middle", padding:"4px", borderTop:thin, borderBottom:thin, borderLeft:thin, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{rec.partyName || "—"}</td>
+          </tr>
+          <tr style={rh(36)}>
+            <td colSpan={2} style={{ fontSize:fs(16), fontWeight:"bold", fontStyle:"italic", textAlign:"center", verticalAlign:"middle", padding:"3px 6px", borderTop:thin, borderBottom:thin, borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}>DELIVERY AT-</td>
+            <td colSpan={4} style={{ fontSize:fs(18), fontWeight:"bold", fontStyle:"italic", textAlign:"center", verticalAlign:"middle", padding:"3px 6px", borderTop:thin, borderBottom:thin, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{rec.deliveryAt || "—"}</td>
+          </tr>
+          <tr style={rh(60)}>
+           <td style={{ fontSize:fs(16), fontWeight:"bold", textAlign:"left", verticalAlign:"bottom", padding:"3px 6px", borderTop:thin, borderBottom:thin, borderLeft:thin, borderRight:thin , whiteSpace:"normal", overflow:"hidden" }}>REF NO-{rec.refNo}</td>
+            <td style={{ fontSize:fs(16), textAlign:"right", verticalAlign:"bottom", padding:"3px 4px", borderTop:thin, borderBottom:thin, borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}>BROKER-</td>
+            <td colSpan={2} style={{ fontSize:fs(16), fontWeight:"bold", fontStyle:"italic", textAlign:"center", verticalAlign:"bottom", padding:"3px 4px", borderTop:thin, borderBottom:thin , whiteSpace:"normal", overflow:"hidden" }}>{rec.brokerName || "—"}</td>
+            <td style={{ fontSize:fs(15), fontWeight:"bold",textAlign:"right", verticalAlign:"bottom", padding:"3px 4px", borderTop:thin, borderBottom:thin , whiteSpace:"nowrap", overflow:"hidden" }}>TRUCK NO.</td>
+            <td style={{ fontSize:fs(14), fontWeight:"bold", textAlign:"left", verticalAlign:"bottom", padding:"3px 6px", borderTop:thin, borderBottom:thin, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{rec.truckNo || "—"}</td>
+          </tr>
+          <tr style={rh(24.6)}>
+            <td style={{ fontSize:fs(15), fontWeight:"bold", textAlign:"left", padding:"2px 6px", borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}>BILL NO.</td>
+            <td style={{ fontSize:fs(15),fontWeight:"bold", textAlign:"left", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>BILL DATE</td>
+            <td colSpan={2} style={{ fontSize:fs(15),fontWeight:"bold", textAlign:"left", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>QTY<em style={{ fontWeight:"bold" }}>(in Qts.)</em></td>
+            <td style={{ fontSize:fs(15),fontWeight:"bold", textAlign:"left", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>RATE <em style={{ fontWeight:"bold" }}>(per Qt)</em></td>
+            <td style={{ fontSize:fs(15),fontWeight:"bold", textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>AMT</td>
+          </tr>
+          <tr style={rh(8)}>
+            <td style={{ borderTop:thin, borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td style={{ borderTop:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td style={{ borderTop:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td style={{ borderTop:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td style={{ borderTop:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td style={{ borderTop:thin, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+          </tr>
+
+          <tr style={rh(16)}>
+            <td style={{ fontSize:fs(20), textAlign:"left", padding:"0px 6px", borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{rec.billNo || "—"}</td>
+            <td style={{ fontSize:fs(18), textAlign:"left", padding:"0px 4px", whiteSpace:"nowrap" }}>{fmtDate(rec.billDate)}</td>
+           <td style={{ fontSize:fs(20), textAlign:"right", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{rec.billQty ? parseFloat(rec.billQty).toFixed(2) : "—"}</td>
+            <td colSpan={2} style={{ fontSize:fs(14), fontStyle:"italic", textAlign:"right", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>PARTY BILL AMT.</td>
+            <td style={{ fontSize:fs(20), textAlign:"left", padding:"0px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{h(c.partyBillAmt)}</td>
+          </tr>
+          <tr style={rh(16)}>
+            <td colSpan={2} style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td style={{ fontSize:fs(20), textAlign:"right", verticalAlign:"top", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{c.shortage > 0 ? (-c.shortage).toFixed(2) : ""}</td>
+            <td style={{ fontSize:fs(16), textAlign:"left", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{c.shortage > 0 ? "SHTG" : ""}</td>
+            <td colSpan={2} style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+           </tr> 
+          <tr style={rh(16)}>
+            <td colSpan={2} style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td style={{ fontSize:fs(20), textAlign:"right", padding:"0px 4px", whiteSpace:"nowrap", overflow:"hidden" }}>{c.halfKgQty > 0 ? (-c.halfKgQty).toFixed(2) : ""}</td>
+            <td style={{ fontSize:fs(16), textAlign:"left", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{c.halfKgQty > 0 ? "("+parseFloat(rec.halfKgValue||0)+" KG)" : ""}</td>
+            <td colSpan={2} style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+          </tr>
+         <tr style={rh(16)}>
+            <td colSpan={2} style={{ borderLeft:thin, whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td style={{ fontSize:fs(20), textAlign:"right", padding:"0px 4px", whiteSpace:"nowrap", overflow:"hidden" }}>{c.gunnyDeduct > 0 ? (-c.gunnyDeduct).toFixed(3) : ""}</td>
+            <td style={{ fontSize:fs(16), textAlign:"left", padding:"0px 4px", whiteSpace:"nowrap", overflow:"hidden" }}>{c.gunnyDeduct > 0 ? "GUNNY" : ""}</td>
+            <td colSpan={2} style={{ borderRight:thin, whiteSpace:"nowrap", overflow:"hidden" }}></td>
+          </tr>
+          <tr style={rh(16)}>
+            <td colSpan={2} style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td style={{ fontSize:fs(20), textAlign:"right", padding:"0px 4px", borderTop:hair , whiteSpace:"nowrap", overflow:"hidden" }}>{c.netQty.toFixed(2)}</td>
+            <td style={{ borderTop:hair , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td style={{ fontSize:fs(20), textAlign:"left", padding:"0px 4px", borderTop:hair , whiteSpace:"nowrap", overflow:"hidden" }}>{rec.rate ? Math.round(parseFloat(rec.rate)) : "—"}</td>
+            <td style={{ fontSize:fs(20), textAlign:"left", padding:"0px 6px", borderTop:hair, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{h(c.netAmt1)}</td>
+          </tr>
+
+          <tr style={rh(38.4)}>
+            <td style={{ borderTop:hair, borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td style={{ borderTop:hair , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td style={{ borderTop:hair , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px", borderTop:hair , whiteSpace:"nowrap", overflow:"hidden" }}>{c.cdAmt > 0 ? "CD   "+rec.cdPct+"%" : ""}</td>
+            <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderTop:hair, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{c.cdAmt > 0 ? "-"+h(c.cdAmt) : ""}</td>
+          </tr>
+          <tr style={rh(25.8)}>
+            <td colSpan={3} style={{ borderLeft:thin, padding:"2px 6px" , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(rec.qualityClaim) > 0 ? "QUALITY CLAIM" : ""}</td>
+            <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(rec.qualityClaim) > 0 ? "-"+h(parseFloat(rec.qualityClaim)) : ""}</td>
+          </tr>
+          <tr style={rh(25.95)}>
+            <td rowSpan={6} colSpan={3} style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(rec.freight) > 0 ? "FREIGHT" : ""}</td>
+            <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(rec.freight) > 0 ? "-"+h(parseFloat(rec.freight)) : ""}</td>
+          </tr>
+          <tr style={rh(25.8)}>
+            <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(rec.hammali) > 0 ? "HAMMALI" : ""}</td>
+            <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(rec.hammali) > 0 ? "-"+h(parseFloat(rec.hammali)) : ""}</td>
+          </tr>
+          <tr style={rh(25.8)}>
+            <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(rec.others) > 0 ? "OTHERS" : ""}</td>
+            <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(rec.others) > 0 ? "+"+h(parseFloat(rec.others)) : ""}</td>
+          </tr>
+          <tr style={rh(25.8)}><td colSpan={3} style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td></tr>
+          <tr style={rh(25.8)}><td colSpan={3} style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td></tr>
+          <tr style={rh(27.6)}>
+            <td colSpan={3} style={{ fontSize:fs(15), fontWeight:"bold", textAlign:"center", padding:"2px 4px", color:"#555", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>
+              {(c.brokerageAmt > 0 || (rec._tds||0) > 0) ? "BROKERAGE & TDS DETAILS" : ""}
+            </td>
+          </tr>
+          <tr style={rh(25.8)}>
+            <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td><td></td><td></td>
+            <td style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+          </tr>
+          <tr style={rh(25.8)}>
+            <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td>
+            <td colSpan={2} style={{ fontSize:fs(20), textAlign:"left", padding:"2px 4px", fontWeight:"normal" , whiteSpace:"nowrap", overflow:"hidden" }}>{c.brokerageAmt > 0 ? "BROKERAGE" : ""}</td>
+            <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", fontWeight:"normal", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{c.brokerageAmt > 0 ? "-"+h(c.brokerageAmt) : ""}</td>
+          </tr>
+          <tr style={rh(25.8)}>
+            <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td>
+            <td colSpan={2} style={{ fontSize:fs(20), textAlign:"left", padding:"2px 4px", fontWeight:"normal" , whiteSpace:"nowrap", overflow:"hidden" }}>{(rec._tds||0) > 0 ? "TDS" : ""}</td>
+            <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{(rec._tds||0) > 0 ? "-"+h(rec._tds||0) : ""}</td>
+          </tr>
+          <tr style={rh(25.8)}>
+            <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td><td></td><td></td>
+            <td style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+          </tr>
+          <tr style={rh(25.8)}>
+            <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td>
+            <td colSpan={2} style={{ fontSize:fs(20), fontWeight:"bold", textAlign:"left", padding:"4px 4px", borderTop:thin, borderBottom:thin , whiteSpace:"nowrap", overflow:"hidden" }}>NET AMT</td>
+            <td style={{ fontSize:fs(20), fontWeight:"bold", textAlign:"left", padding:"4px 6px", borderTop:thin, borderBottom:thin, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{h(c.finalAmt)}</td>
+          </tr>
+          <tr style={rh(25.8)}>
+            <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td><td></td><td></td>
+            <td style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+          </tr>
+          <tr style={rh(25.8)}>
+            <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td>
+            <td colSpan={2} style={{ fontSize:fs(16), textAlign:"center", padding:"2px 6px", color:"#555" , whiteSpace:"nowrap", overflow:"hidden" }}>PMT DETAILS</td>
+            <td style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+          </tr>
+          <tr style={rh(28.8)}>
+            <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td>
+            <td style={{ fontSize:fs(18), textAlign:"left", padding:"2px 4px", color:"red" , whiteSpace:"nowrap", overflow:"hidden" }}>{fmtDate(rec.bankDate1)}</td>
+            <td style={{ fontSize:fs(18), textAlign:"left", padding:"2px 4px", color:"red" , whiteSpace:"nowrap", overflow:"hidden" }}>{slotLabel(rec.bankAmt1, rec.bankName1)}</td>
+            <td style={{ fontSize:fs(22), textAlign:"left", padding:"2px 6px", color:"red", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{slotHasValue(rec.bankAmt1) ? h(parseFloat(rec.bankAmt1)) : ""}</td>
+          </tr>
+          <tr style={rh(28.8)}>
+            <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td>
+            <td style={{ fontSize:fs(18), textAlign:"left", padding:"2px 4px", color:"red" , whiteSpace:"nowrap", overflow:"hidden" }}>{fmtDate(rec.bankDate2)}</td>
+           <td style={{ fontSize:fs(18), textAlign:"left", padding:"2px 4px", color:"red" , whiteSpace:"nowrap", overflow:"hidden" }}>{slotLabel(rec.bankAmt2, rec.bankName2)}</td>
+            <td style={{ fontSize:fs(22), textAlign:"left", padding:"2px 6px", color:"red", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{slotHasValue(rec.bankAmt2) ? h(parseFloat(rec.bankAmt2)) : ""}</td>
+          </tr>
+          <tr style={rh(28.95)}>
+            <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td>
+            <td style={{ fontSize:fs(18), textAlign:"left", padding:"2px 4px", color:"red" , whiteSpace:"nowrap", overflow:"hidden" }}>{fmtDate(rec.bankDate3)}</td>
+         <td style={{ fontSize:fs(18), textAlign:"left", padding:"2px 4px", color:"red" , whiteSpace:"nowrap", overflow:"hidden" }}>{slotLabel(rec.bankAmt3, rec.bankName3)}</td>
+            <td style={{ fontSize:fs(22), textAlign:"left", padding:"2px 6px", color:"red", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{slotHasValue(rec.bankAmt3) ? h(parseFloat(rec.bankAmt3)) : ""}</td>
+          </tr>
+          <tr style={rh(28.95)}>
+            <td style={{ borderBottom:thin, borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td style={{ borderBottom:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td style={{ borderBottom:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
+            <td colSpan={2} style={{ fontSize:fs(20), fontWeight:"bold", textAlign:"left", padding:"4px 4px", borderTop:thin, borderBottom:thin , whiteSpace:"nowrap", overflow:"hidden" }}>BAL</td>
+            <td style={{ fontSize:fs(20), fontWeight:"bold", textAlign:"left", padding:"4px 6px", borderTop:thin, borderBottom:thin, borderRight:thin, color: c.balance === 0 ? "#067647" : c.balance > 0 ? "#a90000" : "#067647" , whiteSpace:"nowrap", overflow:"hidden" }}>{h(c.balance)}</td>
+          </tr>
+
+          {rec.note && <tr>
+            <td colSpan={6} style={{ padding:"5px 6px", fontSize:fs(12), color:"#000000", fontStyle:"italic" , whiteSpace:"nowrap", overflow:"hidden" }}>Note: {rec.note}</td>
+          </tr>}
+
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function HisabPana({ records, calcAll, fmt }) {
   const [hisabRef, setHisabRef] = useState("");
   const [hisabRec, setHisabRec] = useState(null);
@@ -1452,7 +1734,39 @@ function HisabPana({ records, calcAll, fmt }) {
     });
   }, [records]);
 
-const loadAtIndex = (idx) => {
+// Resolve the full linked cluster (transitive over refA/refB) for a given record,
+  // returned in numeric refNo order. Same-FY only (records is already FY-scoped).
+  const linkedCluster = useMemo(() => {
+    if (!hisabRec) return [];
+    const byRef = new Map(records.map(r => [r.refNo.trim().toUpperCase(), r]));
+    const seen = new Set();
+    const queue = [hisabRec.refNo.trim().toUpperCase()];
+    while (queue.length) {
+      const key = queue.shift();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const rec = byRef.get(key);
+      if (!rec) continue;
+      [rec.refA, rec.refB].forEach(lr => {
+        const lk = (lr || "").trim().toUpperCase();
+        if (lk && !seen.has(lk)) queue.push(lk);
+      });
+    }
+    const parseRef = (ref) => {
+      const s = String(ref || "").trim();
+      const m = s.match(/^(\d+)(.*)$/);
+      return m ? { num: parseInt(m[1], 10), suf: m[2].toUpperCase() } : { num: Infinity, suf: s.toUpperCase() };
+    };
+    return [...seen]
+      .map(k => byRef.get(k))
+      .filter(Boolean)
+      .sort((a, b) => {
+        const pa = parseRef(a.refNo), pb = parseRef(b.refNo);
+        return pa.num !== pb.num ? pa.num - pb.num : pa.suf.localeCompare(pb.suf);
+      });
+  }, [hisabRec, records]);
+
+  const loadAtIndex = (idx) => {
     if (idx < 0 || idx >= sortedRecords.length) return;
     const rec = sortedRecords[idx];
     setHisabRec(rec);
@@ -1512,188 +1826,39 @@ const loadAtIndex = (idx) => {
       </div>
 
       {hisabRec && c && (
-        <div style={{ background:"#e0e0e0", padding:"30px", borderRadius:8 }}>
-       <div id="hisab-print" style={{ background:"#fff", color:"#000", width:496, margin:"0 auto", fontFamily:"Arial,sans-serif" }}>
-         <table style={{ width:"100%", borderCollapse:"collapse", tableLayout:"fixed" }}>
-            <colgroup>
-              <col style={{ width:"12.8%" }} />
-              <col style={{ width:"15.7%" }} />
-              <col style={{ width:"13.5%" }} />
-              <col style={{ width:"18.1%" }} />
-              <col style={{ width:"23.4%" }} />
-              <col style={{ width:"16.5%" }} />
-            </colgroup>
-            <tbody>
+        <div>
+          {/* Linked refs banner — clickable to jump to each */}
+          {linkedCluster.length > 1 && (
+            <div style={{ marginBottom:16, padding:"10px 14px", background:"#151b2a", border:"1px solid #f59e0b", borderRadius:8, display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+              <span style={{ fontSize:12, color:"#f59e0b", fontWeight:700 }}>🔗 Linked bills:</span>
+              {linkedCluster.map(r => (
+                <button
+                  key={r.refNo}
+                  onClick={() => { setHisabRec(r); setHisabRef(r.refNo); setHisabErr(""); }}
+                  style={{
+                    padding:"5px 12px", borderRadius:6, border:"none", fontSize:12, fontWeight:700, cursor:"pointer",
+                    background: r.refNo === hisabRec.refNo ? "#f59e0b" : "#1e2a3a",
+                    color: r.refNo === hisabRec.refNo ? "#0f1117" : "#94a3b8"
+                  }}
+                >
+                  {r.refNo}
+                </button>
+              ))}
+              <span style={{ fontSize:11, color:"#64748b", marginLeft:4 }}>(all print together)</span>
+            </div>
+          )}
 
-            <tr style={rh(33.6)}>
-              <td colSpan={6} style={{ fontSize:fs(18), fontWeight:"bold", textAlign:"center", verticalAlign:"middle", padding:"2px 4px", borderTop:thin, borderLeft:thin, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden", color:"#003d76" }}>I K ENTERPRISES</td>
-            </tr>
-            <tr style={rh(22.2)}>
-              <td colSpan={6} style={{ fontSize:fs(10), fontWeight:"bold", textAlign:"center", verticalAlign:"middle", padding:"1px", letterSpacing:"1px", borderLeft:thin, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden", color:"#003d76" }}>GENRAL MERCHANT AND COMMISION AGENT</td>
-            </tr>
-            <tr style={rh(21.6)}>
-              <td colSpan={6} style={{ fontSize:fs(11), fontWeight:"bold", textAlign:"center", verticalAlign:"middle", padding:"1px 0 3px", borderLeft:thin, borderRight:thin, borderBottom:thin , whiteSpace:"nowrap", overflow:"hidden", color:"#003d76" }}>18, NEW ANAJ MANDI,SANYOGITAGANJ, INDORE, 452001</td>
-            </tr>
-            <tr style={rh(43.2)}>
-              <td colSpan={6} style={{ fontSize:fs(19), fontWeight:"bold", fontStyle:"italic", textAlign:"center", verticalAlign:"middle", padding:"4px", borderTop:thin, borderBottom:thin, borderLeft:thin, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{hisabRec.partyName || "—"}</td>
-            </tr>
-            <tr style={rh(36)}>
-              <td colSpan={2} style={{ fontSize:fs(16), fontWeight:"bold", fontStyle:"italic", textAlign:"center", verticalAlign:"middle", padding:"3px 6px", borderTop:thin, borderBottom:thin, borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}>DELIVERY AT-</td>
-              <td colSpan={4} style={{ fontSize:fs(18), fontWeight:"bold", fontStyle:"italic", textAlign:"center", verticalAlign:"middle", padding:"3px 6px", borderTop:thin, borderBottom:thin, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{hisabRec.deliveryAt || "—"}</td>
-            </tr>
-            <tr style={rh(60)}>
-             <td style={{ fontSize:fs(16), fontWeight:"bold", textAlign:"left", verticalAlign:"bottom", padding:"3px 6px", borderTop:thin, borderBottom:thin, borderLeft:thin, borderRight:thin , whiteSpace:"normal", overflow:"hidden" }}>REF NO-{hisabRec.refNo}</td>
-              <td style={{ fontSize:fs(16), textAlign:"right", verticalAlign:"bottom", padding:"3px 4px", borderTop:thin, borderBottom:thin, borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}>BROKER-</td>
-              <td colSpan={2} style={{ fontSize:fs(16), fontWeight:"bold", fontStyle:"italic", textAlign:"center", verticalAlign:"bottom", padding:"3px 4px", borderTop:thin, borderBottom:thin , whiteSpace:"normal", overflow:"hidden" }}>{hisabRec.brokerName || "—"}</td>
-              <td style={{ fontSize:fs(15), fontWeight:"bold",textAlign:"right", verticalAlign:"bottom", padding:"3px 4px", borderTop:thin, borderBottom:thin , whiteSpace:"nowrap", overflow:"hidden" }}>TRUCK NO.</td>
-              <td style={{ fontSize:fs(14), fontWeight:"bold", textAlign:"left", verticalAlign:"bottom", padding:"3px 6px", borderTop:thin, borderBottom:thin, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{hisabRec.truckNo || "—"}</td>
-            </tr>
-            <tr style={rh(24.6)}>
-              <td style={{ fontSize:fs(15), fontWeight:"bold", textAlign:"left", padding:"2px 6px", borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}>BILL NO.</td>
-              <td style={{ fontSize:fs(15),fontWeight:"bold", textAlign:"left", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>BILL DATE</td>
-              <td colSpan={2} style={{ fontSize:fs(15),fontWeight:"bold", textAlign:"left", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>QTY<em style={{ fontWeight:"bold" }}>(in Qts.)</em></td>
-              <td style={{ fontSize:fs(15),fontWeight:"bold", textAlign:"left", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>RATE <em style={{ fontWeight:"bold" }}>(per Qt)</em></td>
-              <td style={{ fontSize:fs(15),fontWeight:"bold", textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>AMT</td>
-            </tr>
-            <tr style={rh(8)}>
-              <td style={{ borderTop:thin, borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td style={{ borderTop:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td style={{ borderTop:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td style={{ borderTop:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td style={{ borderTop:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td style={{ borderTop:thin, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-            </tr>
-           
-            <tr style={rh(16)}>
-              <td style={{ fontSize:fs(20), textAlign:"left", padding:"0px 6px", borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{hisabRec.billNo || "—"}</td>
-              <td style={{ fontSize:fs(18), textAlign:"left", padding:"0px 4px", whiteSpace:"nowrap" }}>{fmtDate(hisabRec.billDate)}</td>
-             <td style={{ fontSize:fs(20), textAlign:"right", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{hisabRec.billQty ? parseFloat(hisabRec.billQty).toFixed(2) : "—"}</td>
-              <td colSpan={2} style={{ fontSize:fs(14), fontStyle:"italic", textAlign:"right", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>PARTY BILL AMT.</td>
-              <td style={{ fontSize:fs(20), textAlign:"left", padding:"0px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{h(c.partyBillAmt)}</td>
-            </tr>
-            <tr style={rh(16)}>
-              <td colSpan={2} style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td style={{ fontSize:fs(20), textAlign:"right", verticalAlign:"top", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{c.shortage > 0 ? (-c.shortage).toFixed(2) : ""}</td>
-              <td style={{ fontSize:fs(16), textAlign:"left", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{c.shortage > 0 ? "SHTG" : ""}</td>
-              <td colSpan={2} style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-             </tr> 
-            <tr style={rh(16)}>
-              <td colSpan={2} style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td style={{ fontSize:fs(20), textAlign:"right", padding:"0px 4px", whiteSpace:"nowrap", overflow:"hidden" }}>{c.halfKgQty > 0 ? (-c.halfKgQty).toFixed(2) : ""}</td>
-              <td style={{ fontSize:fs(16), textAlign:"left", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{c.halfKgQty > 0 ? "("+parseFloat(hisabRec.halfKgValue||0)+" KG)" : ""}</td>
-              <td colSpan={2} style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-            </tr>
-           <tr style={rh(16)}>
-              <td colSpan={2} style={{ borderLeft:thin, whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td style={{ fontSize:fs(20), textAlign:"right", padding:"0px 4px", whiteSpace:"nowrap", overflow:"hidden" }}>{c.gunnyDeduct > 0 ? (-c.gunnyDeduct).toFixed(3) : ""}</td>
-              <td style={{ fontSize:fs(16), textAlign:"left", padding:"0px 4px", whiteSpace:"nowrap", overflow:"hidden" }}>{c.gunnyDeduct > 0 ? "GUNNY" : ""}</td>
-              <td colSpan={2} style={{ borderRight:thin, whiteSpace:"nowrap", overflow:"hidden" }}></td>
-            </tr>
-            <tr style={rh(16)}>
-              <td colSpan={2} style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td style={{ fontSize:fs(20), textAlign:"right", padding:"0px 4px", borderTop:hair , whiteSpace:"nowrap", overflow:"hidden" }}>{c.netQty.toFixed(2)}</td>
-              <td style={{ borderTop:hair , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td style={{ fontSize:fs(20), textAlign:"left", padding:"0px 4px", borderTop:hair , whiteSpace:"nowrap", overflow:"hidden" }}>{hisabRec.rate ? Math.round(parseFloat(hisabRec.rate)) : "—"}</td>
-              <td style={{ fontSize:fs(20), textAlign:"left", padding:"0px 6px", borderTop:hair, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{h(c.netAmt1)}</td>
-            </tr>
+          {/* On-screen: the loaded receipt */}
+          <div style={{ background:"#e0e0e0", padding:"30px", borderRadius:8 }}>
+            <HisabReceipt rec={hisabRec} calcAll={calcAll} />
+          </div>
 
-            <tr style={rh(38.4)}>
-              <td style={{ borderTop:hair, borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td style={{ borderTop:hair , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td style={{ borderTop:hair , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px", borderTop:hair , whiteSpace:"nowrap", overflow:"hidden" }}>{c.cdAmt > 0 ? "CD   "+hisabRec.cdPct+"%" : ""}</td>
-              <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderTop:hair, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{c.cdAmt > 0 ? "-"+h(c.cdAmt) : ""}</td>
-            </tr>
-            <tr style={rh(25.8)}>
-              <td colSpan={3} style={{ borderLeft:thin, padding:"2px 6px" , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(hisabRec.qualityClaim) > 0 ? "QUALITY CLAIM" : ""}</td>
-              <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(hisabRec.qualityClaim) > 0 ? "-"+h(parseFloat(hisabRec.qualityClaim)) : ""}</td>
-            </tr>
-            <tr style={rh(25.95)}>
-              <td rowSpan={6} colSpan={3} style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(hisabRec.freight) > 0 ? "FREIGHT" : ""}</td>
-              <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(hisabRec.freight) > 0 ? "-"+h(parseFloat(hisabRec.freight)) : ""}</td>
-            </tr>
-            <tr style={rh(25.8)}>
-              <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(hisabRec.hammali) > 0 ? "HAMMALI" : ""}</td>
-              <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(hisabRec.hammali) > 0 ? "-"+h(parseFloat(hisabRec.hammali)) : ""}</td>
-            </tr>
-            <tr style={rh(25.8)}>
-              <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(hisabRec.others) > 0 ? "OTHERS" : ""}</td>
-              <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(hisabRec.others) > 0 ? "+"+h(parseFloat(hisabRec.others)) : ""}</td>
-            </tr>
-            <tr style={rh(25.8)}><td colSpan={3} style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td></tr>
-            <tr style={rh(25.8)}><td colSpan={3} style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td></tr>
-            <tr style={rh(27.6)}>
-              <td colSpan={3} style={{ fontSize:fs(15), fontWeight:"bold", textAlign:"center", padding:"2px 4px", color:"#555", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>
-                {(c.brokerageAmt > 0 || (hisabRec._tds||0) > 0) ? "BROKERAGE & TDS DETAILS" : ""}
-              </td>
-            </tr>
-            <tr style={rh(25.8)}>
-              <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td><td></td><td></td>
-              <td style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-            </tr>
-            <tr style={rh(25.8)}>
-              <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td>
-              <td colSpan={2} style={{ fontSize:fs(20), textAlign:"left", padding:"2px 4px", fontWeight:"normal" , whiteSpace:"nowrap", overflow:"hidden" }}>{c.brokerageAmt > 0 ? "BROKERAGE" : ""}</td>
-              <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", fontWeight:"normal", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{c.brokerageAmt > 0 ? "-"+h(c.brokerageAmt) : ""}</td>
-            </tr>
-            <tr style={rh(25.8)}>
-              <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td>
-              <td colSpan={2} style={{ fontSize:fs(20), textAlign:"left", padding:"2px 4px", fontWeight:"normal" , whiteSpace:"nowrap", overflow:"hidden" }}>{(hisabRec._tds||0) > 0 ? "TDS" : ""}</td>
-              <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{(hisabRec._tds||0) > 0 ? "-"+h(hisabRec._tds||0) : ""}</td>
-            </tr>
-            <tr style={rh(25.8)}>
-              <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td><td></td><td></td>
-              <td style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-            </tr>
-            <tr style={rh(25.8)}>
-              <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td>
-              <td colSpan={2} style={{ fontSize:fs(20), fontWeight:"bold", textAlign:"left", padding:"4px 4px", borderTop:thin, borderBottom:thin , whiteSpace:"nowrap", overflow:"hidden" }}>NET AMT</td>
-              <td style={{ fontSize:fs(20), fontWeight:"bold", textAlign:"left", padding:"4px 6px", borderTop:thin, borderBottom:thin, borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{h(c.finalAmt)}</td>
-            </tr>
-            <tr style={rh(25.8)}>
-              <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td><td></td><td></td>
-              <td style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-            </tr>
-            <tr style={rh(25.8)}>
-              <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td>
-              <td colSpan={2} style={{ fontSize:fs(16), textAlign:"center", padding:"2px 6px", color:"#555" , whiteSpace:"nowrap", overflow:"hidden" }}>PMT DETAILS</td>
-              <td style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-            </tr>
-            <tr style={rh(28.8)}>
-              <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td>
-              <td style={{ fontSize:fs(18), textAlign:"left", padding:"2px 4px", color:"red" , whiteSpace:"nowrap", overflow:"hidden" }}>{fmtDate(hisabRec.bankDate1)}</td>
-              <td style={{ fontSize:fs(18), textAlign:"left", padding:"2px 4px", color:"red" , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(hisabRec.bankAmt1) > 0 ? "PAID FROM  "+(hisabRec.bankName1||"") : ""}</td>
-              <td style={{ fontSize:fs(22), textAlign:"left", padding:"2px 6px", color:"red", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(hisabRec.bankAmt1) > 0 ? h(parseFloat(hisabRec.bankAmt1)) : ""}</td>
-            </tr>
-            <tr style={rh(28.8)}>
-              <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td>
-              <td style={{ fontSize:fs(18), textAlign:"left", padding:"2px 4px", color:"red" , whiteSpace:"nowrap", overflow:"hidden" }}>{fmtDate(hisabRec.bankDate2)}</td>
-              <td style={{ fontSize:fs(18), textAlign:"left", padding:"2px 4px", color:"red" , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(hisabRec.bankAmt2) > 0 ? "PAID FROM  "+(hisabRec.bankName2||"") : ""}</td>
-              <td style={{ fontSize:fs(22), textAlign:"left", padding:"2px 6px", color:"red", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(hisabRec.bankAmt2) > 0 ? h(parseFloat(hisabRec.bankAmt2)) : ""}</td>
-            </tr>
-            <tr style={rh(28.95)}>
-              <td style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td><td></td><td></td>
-              <td style={{ fontSize:fs(18), textAlign:"left", padding:"2px 4px", color:"red" , whiteSpace:"nowrap", overflow:"hidden" }}>{fmtDate(hisabRec.bankDate3)}</td>
-              <td style={{ fontSize:fs(18), textAlign:"left", padding:"2px 4px", color:"red" , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(hisabRec.bankAmt3) > 0 ? "PAID FROM  "+(hisabRec.bankName3||"") : ""}</td>
-              <td style={{ fontSize:fs(22), textAlign:"left", padding:"2px 6px", color:"red", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(hisabRec.bankAmt3) > 0 ? h(parseFloat(hisabRec.bankAmt3)) : ""}</td>
-            </tr>
-            <tr style={rh(28.95)}>
-              <td style={{ borderBottom:thin, borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td style={{ borderBottom:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td style={{ borderBottom:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-              <td colSpan={2} style={{ fontSize:fs(20), fontWeight:"bold", textAlign:"left", padding:"4px 4px", borderTop:thin, borderBottom:thin , whiteSpace:"nowrap", overflow:"hidden" }}>BAL</td>
-              <td style={{ fontSize:fs(20), fontWeight:"bold", textAlign:"left", padding:"4px 6px", borderTop:thin, borderBottom:thin, borderRight:thin, color: c.balance === 0 ? "#067647" : c.balance > 0 ? "#a90000" : "#067647" , whiteSpace:"nowrap", overflow:"hidden" }}>{h(c.balance)}</td>
-            </tr>
-
-            {hisabRec.note && <tr>
-              <td colSpan={6} style={{ padding:"5px 6px", fontSize:fs(12), color:"#000000", fontStyle:"italic" , whiteSpace:"nowrap", overflow:"hidden" }}>Note: {hisabRec.note}</td>
-            </tr>}
-
-            </tbody>
-          </table>
-        </div>
+          {/* Print-only: every cluster member, each its own page */}
+          <div className="hisab-print-cluster" style={{ display:"none" }}>
+            {linkedCluster.map(r => (
+              <HisabReceipt key={r.refNo} rec={r} calcAll={calcAll} />
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -2814,6 +2979,17 @@ useEffect(() => {
   };
 }, [currentUser]);  
 
+// Prevent mouse-wheel from changing focused number inputs (accidental edits)
+useEffect(() => {
+  const stopWheel = (e) => {
+    if (e.target instanceof HTMLInputElement && e.target.type === "number" && document.activeElement === e.target) {
+      e.target.blur();
+    }
+  };
+  document.addEventListener("wheel", stopWheel, { passive: true });
+  return () => document.removeEventListener("wheel", stopWheel);
+}, []);
+
 // ---- Loan Party handlers ----
 const addLoanPartyHandler = async () => {
   const name = newLoanParty.trim();
@@ -3912,10 +4088,102 @@ const hasBlankBroker = useMemo(() => {
       }
     }
 
-    setRecords(newRecords);
+setRecords(newRecords);
+
+    // Surplus distribution across linked refs (post-save)
+    {
+      // Resolve cluster transitively from the just-saved ref, over newRecords
+      const byRef = new Map(newRecords.map(r => [r.refNo.trim().toUpperCase(), r]));
+      const seen = new Set();
+      const queue = [refNo.toUpperCase()];
+      while (queue.length) {
+        const key = queue.shift();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const r = byRef.get(key);
+        if (!r) continue;
+        [r.refA, r.refB].forEach(lr => {
+          const lk = (lr || "").trim().toUpperCase();
+          if (lk && !seen.has(lk)) queue.push(lk);
+        });
+      }
+      const cluster = [...seen].map(k => byRef.get(k)).filter(Boolean);
+
+      if (cluster.length > 1) {
+        // Find an overpaid member (payments exceed finalAmt), ignoring existing ADJUST entries
+        const paidReal = (r) => [1,2,3].reduce((s,i) => {
+          const nm = (r[`bankName${i}`] || "");
+          const amt = parseFloat(r[`bankAmt${i}`]) || 0;
+          return s + (nm.startsWith("ADJUST:") ? 0 : amt);  // count only real payments
+        }, 0);
+        const overpaid = cluster.find(r => paidReal(r) - (parseFloat(r._finalAmt) || 0) > 0
+          && ![1,2,3].some(i => (r[`bankName${i}`] || "").startsWith("ADJUST:"))); // not already distributed
+
+        if (overpaid) {
+          const plan = computeAdjustPlan(cluster, overpaid.refNo);
+          if (plan.ok) {
+            const msg = `Ref ${overpaid.refNo} overpaid by ₹${plan.summary.surplus.toLocaleString("en-IN")}.\n\nDistribute:\n` +
+              plan.entries.filter(e => e.amount > 0).map(e => `  ${e.refNo}: +₹${e.amount.toLocaleString("en-IN")}`).join("\n") +
+              `\n  ${overpaid.refNo}: −₹${plan.summary.distributed.toLocaleString("en-IN")} (adjust out)` +
+              (plan.summary.leftover > 0 ? `\n\n⚠ ₹${plan.summary.leftover.toLocaleString("en-IN")} surplus remains (receivers fully covered).` : "") +
+              `\n\nProceed?`;
+            if (confirm(msg)) {
+              const done = await applyAdjustPlan(plan);
+              if (done) showToast(`Distributed ₹${plan.summary.distributed.toLocaleString("en-IN")} across linked refs`);
+            }
+          }
+        }
+      }
+    }
+
     setForm({ ...EMPTY });
     setEditMode(false);
   };
+ 
+ // Apply an adjust-plan: write the transfer entries into bank slots across the cluster,
+// recompute each affected record's balance, persist, and update state.
+const applyAdjustPlan = async (plan) => {
+  if (!plan.ok) { showToast(plan.error, "error"); return false; }
+
+  // Group entries by refNo (a ref may only get one entry here, but be safe)
+  const byRef = {};
+  plan.entries.forEach(e => { (byRef[e.refNo] ||= []).push(e); });
+
+  const updatedRecs = [];
+  for (const refNo of Object.keys(byRef)) {
+    const rec = records.find(r => r.refNo === refNo);
+    if (!rec) { showToast(`Record ${refNo} not found — aborted`, "error"); return false; }
+
+    let updated = { ...rec };
+    for (const e of byRef[refNo]) {
+      updated[`bankAmt${e.slot}`] = e.amount;
+      updated[`bankDate${e.slot}`] = e.bankDate || "";
+      updated[`bankName${e.slot}`] = e.bankName;
+    }
+
+    // Recompute this record's calc + balance with its own cdRule
+    const cdRule = claimRules.find(r => r.partyName === updated.deliveryAt)?.cdRule || "standard";
+    const c = calcAll(updated, updated._tds || 0, cdRule);
+    updated = { ...updated, _cdRule: cdRule, _shortage: c.shortage, _halfKgQty: c.halfKgQty, _netQty: c.netQty, _netAmt1: c.netAmt1, _cdAmt: c.cdAmt, _netAmt: c.netAmt, _brokerageAmt: c.brokerageAmt, _finalAmt: c.finalAmt, _balance: c.balance };
+
+    updatedRecs.push(updated);
+  }
+
+  // Persist all
+  for (const rec of updatedRecs) {
+    const ok = await upsertRecord(rec, activeFY);
+    if (!ok) { showToast(`Failed to save ${rec.refNo} — check connection`, "error"); return false; }
+  }
+
+  // Update state in one pass
+  setRecords(prev => prev.map(r => {
+    const u = updatedRecs.find(x => x.refNo === r.refNo);
+    return u || r;
+  }));
+
+  return true;
+};
+
   const handleEditByRef = () => {
     const refNo = form.refNo.trim();
     if (!refNo) { showToast("ENTER REF NO FIRST", "error"); return; }
@@ -4371,8 +4639,11 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap');
         *{box-sizing:border-box;margin:0;padding:0}
-        input:focus,select:focus{border-color:#f59e0b!important}
+       input:focus,select:focus{border-color:#f59e0b!important}
         input::placeholder{color:#334155}
+        input[type=number]::-webkit-inner-spin-button,
+        input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+        input[type=number]{-moz-appearance:textfield}
         ::-webkit-scrollbar{width:6px;height:6px}
         ::-webkit-scrollbar-track{background:#0f1117}
         ::-webkit-scrollbar-thumb{background:#1e2a3a;border-radius:4px}
@@ -4380,24 +4651,34 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
     @media print {
           body * { visibility: hidden !important; }
           .hisab-controls { display: none !important; }
-          #hisab-print, #hisab-print * { visibility: visible !important; }
-      #hisab-print {
+
+          /* Reveal the print cluster (all linked receipts) and its pages */
+          .hisab-print-cluster { display: block !important; }
+          .hisab-print-cluster, .hisab-print-cluster * { visibility: visible !important; }
+
+          .hisab-print-cluster {
             position: absolute !important;
-            left: 50% !important;
-            top: 2mm !important;
-            transform: translateX(-50%) !important;
-            transform-origin: top center !important;
-            zoom: 0.92 !important;
+            left: 0 !important;
+            top: 0 !important;
+            width: 100% !important;
+          }
+
+          /* Each receipt = its own A5 page */
+          .hisab-page {
+            zoom: 0.91 !important;
+            margin: 0 auto !important;
             background: #fff !important;
             box-shadow: none !important;
+            page-break-after: always !important;
+            break-after: page !important;
           }
-      html, body {
-            background: #fff !important;
-            height: auto !important;
-            min-height: 0 !important;
-            overflow: hidden !important;
+          .hisab-page:last-child {
+            page-break-after: auto !important;
+            break-after: auto !important;
           }
-          @page { size: A5; margin: 2mm; }
+
+          html, body { background: #fff !important; }
+          @page { size: A5; margin: 3mm; }
         }
       `}</style>
 
