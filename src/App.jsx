@@ -1451,7 +1451,7 @@ const loadAtIndex = (idx) => {
 
   return (
     <div>
-      <div style={{ display:"flex", gap:12, marginBottom:28, alignItems:"center" }}>
+      <div className="hisab-controls" style={{ display:"flex", gap:12, marginBottom:28, alignItems:"center" }}>
         <input value={hisabRef} onChange={e => setHisabRef(e.target.value)} onKeyDown={e => e.key==="Enter" && loadHisab()}
           placeholder="Enter Ref No..." style={inp} />
         <button onClick={loadHisab} style={{ background:"linear-gradient(135deg,#f59e0b,#ef4444)", border:"none", borderRadius:8, padding:"10px 24px", color:"#fff", fontWeight:700, fontSize:14, cursor:"pointer" }}>Load</button>
@@ -1459,7 +1459,18 @@ const loadAtIndex = (idx) => {
           style={{ background: currentIndex <= 0 ? "#1e2a3a" : "#334155", border:"1px solid #2a3a50", borderRadius:8, padding:"10px 16px", color:"#fff", fontWeight:700, fontSize:14, cursor: currentIndex <= 0 ? "not-allowed" : "pointer" }}>◀</button>
         <button onClick={() => loadAtIndex(currentIndex + 1)} disabled={currentIndex === -1 || currentIndex >= sortedRecords.length - 1}
           style={{ background: (currentIndex === -1 || currentIndex >= sortedRecords.length - 1) ? "#1e2a3a" : "#334155", border:"1px solid #2a3a50", borderRadius:8, padding:"10px 16px", color:"#fff", fontWeight:700, fontSize:14, cursor: (currentIndex === -1 || currentIndex >= sortedRecords.length - 1) ? "not-allowed" : "pointer" }}>▶</button>
-        {hisabRec && <button onClick={() => window.print()} style={{ background:"#1e2a3a", border:"1px solid #2a3a50", borderRadius:8, padding:"10px 24px", color:"#38bdf8", fontWeight:700, fontSize:14, cursor:"pointer" }}>🖨 Print</button>}
+       {hisabRec && <button onClick={() => window.print()} style={{ background:"#1e2a3a", border:"1px solid #2a3a50", borderRadius:8, padding:"10px 24px", color:"#38bdf8", fontWeight:700, fontSize:14, cursor:"pointer" }}>🖨 Print</button>}
+        {hisabRec && <button onClick={() => {
+          const clean = (s) => String(s || "").trim().replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ");
+          const parts = [hisabRec.refNo, hisabRec.billNo, hisabRec.partyName, hisabRec.brokerName]
+            .map(clean).filter(Boolean);
+          const fileName = parts.join(" - ") || "hisab";
+          const prevTitle = document.title;
+          document.title = fileName;
+          const restore = () => { document.title = prevTitle; window.removeEventListener("afterprint", restore); };
+          window.addEventListener("afterprint", restore);
+          window.print();
+        }} style={{ background:"#1e2a3a", border:"1px solid #2a3a50", borderRadius:8, padding:"10px 24px", color:"#22c55e", fontWeight:700, fontSize:14, cursor:"pointer" }}>📄 Save PDF</button>}
         {hisabErr && <span style={{ color:"#ef4444", fontWeight:600 }}>{hisabErr}</span>}
         {hisabRec && <span style={{ color:"#64748b", fontSize:12 }}>{currentIndex + 1} / {sortedRecords.length}</span>}
       </div>
@@ -4312,19 +4323,20 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
 
     @media print {
           body * { visibility: hidden !important; }
+          .hisab-controls { display: none !important; }
           #hisab-print, #hisab-print * { visibility: visible !important; }
         #hisab-print {
             position: absolute !important;
             left: 50% !important;
-            top: 0 !important;
-            transform: translateX(-50%) scale(1.0) !important;
+            top: 1.5mm !important;
+            transform: translateX(-50%) scale(.97) !important;
             transform-origin: top center !important;
             margin: 0 !important;
             background: #fff !important;
             box-shadow: none !important;
           }
           html, body { background: #fff !important; }
-          @page { size: A5; margin: 6mm; }
+          @page { size: A5; margin: 2mm; }
         }
       `}</style>
 
