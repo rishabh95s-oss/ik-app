@@ -4384,7 +4384,7 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
       #hisab-print {
             position: absolute !important;
             left: 50% !important;
-            top: 1.5mm !important;
+            top: 2mm !important;
             transform: translateX(-50%) !important;
             transform-origin: top center !important;
             zoom: 0.92 !important;
