@@ -1090,6 +1090,21 @@ const BANK_TRANS_COLS_SALES = [
 ];
 const BANK_TRANS_WIDTH = BANK_TRANS_COLS_PMT.reduce((s, c) => s + c.w, 0);
 
+const BANK_MAIN_COLS = [
+  { key:"date",        label:"Date",        w:80,  align:"left"   },
+  { key:"narration",   label:"Narration",   w:200, align:"left"   }, // width overridden by narrationWidth
+  { key:"chqRef",      label:"Chq./Ref",    w:100, align:"left"   },
+  { key:"valueDt",     label:"Value Dt",    w:80,  align:"left"   }, // label swaps to "Mode" for VASB
+  { key:"withdrawal",  label:"Withdrawal",  w:100, align:"right"  },
+  { key:"deposit",     label:"Deposit",     w:100, align:"right"  },
+  { key:"cbBank",      label:"CB (Bank)",   w:120, align:"right"  },
+  { key:"cbCalc",      label:"CB (Calc)",   w:120, align:"right"  },
+  { key:"status",      label:"Status",      w:80,  align:"center" },
+  { key:"refNo",       label:"REF NO",      w:80,  align:"center" },
+  { key:"party",       label:"PARTY",       w:100, align:"left"   },
+  { key:"action",      label:"ACTION",      w:80,  align:"center" },
+];
+
 const PMT_RIGHT_COLS = [
   { label:"REF NO",    w:70,  align:"left"  },
   { label:"PARTY",     w:100, align:"left"  },
@@ -1146,6 +1161,66 @@ const tdR = { padding:"6px 6px", color:"#cbd5e1", textAlign:"right", whiteSpace:
           : "-"}
       </td>
       <td style={tdL}>{trans.partyName || "-"}</td>
+    </>
+  );
+});
+
+function makeBankMainComponents(narrationWidth) {
+  const cols = BANK_MAIN_COLS.map(c => c.key === "narration" ? { ...c, w: narrationWidth } : c);
+  const width = cols.reduce((s, c) => s + c.w, 0);
+  return {
+    Table: ({ children, style, ...rest }) => (
+      <table {...rest} style={{ ...style, width:"100%", minWidth:width, fontSize:10, borderCollapse:"separate", borderSpacing:0, tableLayout:"fixed" }}>
+        <colgroup>{cols.map((c, i) => <col key={i} style={{ width:c.w }} />)}</colgroup>
+        {children}
+      </table>
+    ),
+    TableRow: ({ style, ...props }) => {
+      const i = props["data-index"];
+      return <tr {...props} style={{ ...style, borderBottom:"1px solid #1e2a3a", background: i % 2 === 0 ? "#0f1117" : "#151b2a" }} />;
+    },
+  };
+}
+
+const BankMainRow = React.memo(function BankMainRow({ item, bankTab, narrationWidth, onLink, onUnlink }) {
+  if (item.type === "separator") {
+    return (
+      <td colSpan={12} style={{ padding:"6px 10px", background:"#1a2236", borderTop:"2px solid #f59e0b", borderBottom:"2px solid #f59e0b", color:"#f59e0b", fontWeight:800, fontSize:11, letterSpacing:"1px", textAlign:"center" }}>
+        ◄ FINANCIAL YEAR {item.fy} ►
+      </td>
+    );
+  }
+
+  const trans = item.trans;
+  const { calculatedCB, isValid } = item;
+  const tdBase = { padding:"6px 6px", color:"#cbd5e1", whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a", overflow:"hidden", textOverflow:"ellipsis" };
+
+  return (
+    <>
+      <td style={tdBase}>{trans.date}</td>
+      <td style={{ ...tdBase, textAlign:"left" }}>{trans.narration}</td>
+      <td style={tdBase}>{trans.chqRef}</td>
+      <td style={tdBase}>{bankTab === "VASB" ? trans.mode : trans.valueDt}</td>
+      <td style={{ ...tdBase, textAlign:"right" }}>₹{trans.withdrawalAmt ? trans.withdrawalAmt.toLocaleString() : "-"}</td>
+      <td style={{ ...tdBase, textAlign:"right" }}>₹{trans.depositAmt ? trans.depositAmt.toLocaleString() : "-"}</td>
+      <td style={{ ...tdBase, textAlign:"right" }}>₹{trans.closingBalance.toLocaleString()}</td>
+      <td style={{ ...tdBase, textAlign:"right", color: isValid ? "#22c55e" : "#ef4444", fontWeight:700 }}>₹{calculatedCB.toLocaleString()}</td>
+      <td style={{ ...tdBase, textAlign:"center" }}>
+        <span style={{ color: isValid ? "#22c55e" : "#ef4444", fontWeight:700 }}>{isValid ? "✓" : "✗"}</span>
+      </td>
+      <td style={{ ...tdBase, textAlign:"center", color: trans.linkedRefNo ? "#22c55e" : "#ef4444", fontWeight:700 }}>
+        {trans.linkedRefNo
+          ? <>✓ {trans.linkedRefNo}{trans.linkedFy ? <span style={{ color:"#64748b", fontWeight:600, fontSize:9, marginLeft:4 }}>({trans.linkedFy})</span> : ""}</>
+          : "-"}
+      </td>
+      <td style={tdBase}>{trans.partyName || "-"}</td>
+      <td style={{ ...tdBase, textAlign:"center" }}>
+        {trans.linkedRefNo ? (
+          <button onClick={() => onUnlink(trans)} style={{ background:"#ef4444", border:"none", borderRadius:4, padding:"4px 8px", color:"#fff", fontWeight:700, fontSize:10, cursor:"pointer" }}>Unlink</button>
+        ) : (
+          <button onClick={() => onLink(trans)} style={{ background:"#38bdf8", border:"none", borderRadius:4, padding:"4px 8px", color:"#fff", fontWeight:700, fontSize:10, cursor:"pointer" }}>Link</button>
+        )}
+      </td>
     </>
   );
 });
@@ -3829,9 +3904,22 @@ const filtered = useMemo(() => {
       return m ? { num: parseInt(m[1], 10), suf: m[2].toUpperCase() } : { num: Infinity, suf: s.toUpperCase() };
     };
     return records
-      .filter(r => {
-        const s = search.toLowerCase();
-        const matchSearch = !s || Object.values(r).some(v => String(v).toLowerCase().includes(s));
+    .filter(r => {
+        const norm = (v) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        // Expand a value into search targets. For ISO dates (YYYY-MM-DD),
+        // also emit a DDMMYYYY form so "24-6-2026" / "24062026" matches.
+        const targets = (v) => {
+          const raw = String(v ?? "");
+          const out = [norm(raw)];
+          const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+          if (m) out.push(`${m[3]}${m[2]}${m[1]}`); // DDMMYYYY
+          return out;
+        };
+        // Normalize the query, and zero-pad a bare DMY like "24-6-2026" → "24062026"
+        let s = norm(search);
+        const dmy = search.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+        if (dmy) s = `${dmy[1].padStart(2,"0")}${dmy[2].padStart(2,"0")}${dmy[3]}`;
+        const matchSearch = !s || Object.values(r).some(v => targets(v).some(t => t.includes(s)));
         const matchParty = !filterParty || (filterParty === "__BLANK__" ? !(r.partyName || "").trim() : r.partyName === filterParty);
         const matchBroker = !filterBroker || (filterBroker === "__BLANK__" ? !(r.brokerName || "").trim() : r.brokerName === filterBroker);
         return matchSearch && matchParty && matchBroker;
@@ -4876,242 +4964,151 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
       />
     </div>
 
-    {/* Bank Data Table with Validation */}
-    <div style={{ width:"100vw", marginLeft:"calc(50% - 50vw)", overflowX:"auto", borderRadius:8, border:"1px solid #1e2a3a", maxHeight:"700px", padding:"0 20px", boxSizing:"border-box" }}>
-      <table style={{ width:"100%", fontSize:10, borderCollapse:"collapse" }}>
-        <thead>
-          <tr style={{ background:"#151b2a", position:"sticky", top:0, zIndex:10 }}>
-            <th style={{ padding:"8px 6px", textAlign:"left", color:"#64748b", fontWeight:700, whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a", minWidth:"80px" }}>Date</th>
-            <th 
-  style={{ 
-    padding:"8px 6px", 
-    color:"#64748b", 
-    fontWeight:700, 
-    whiteSpace:"nowrap", 
-    borderRight:"1px solid #1e2a3a", 
-    minWidth:`${narrationWidth}px`,
-    position:"relative",
-    userSelect:"none"
-  }}
->
-  Narration
-  <div
-    onMouseDown={(e) => {
-      e.preventDefault();
-      const startX = e.clientX;
-      const startWidth = narrationWidth;
-      
-      const handleMouseMove = (moveEvent) => {
-        const diff = moveEvent.clientX - startX;
-        setNarrationWidth(Math.max(150, startWidth + diff));
-      };
-      
-      const handleMouseUp = () => {
-        document.removeEventListener("mousemove", handleMouseMove);
-        document.removeEventListener("mouseup", handleMouseUp);
-      };
-      
-      document.addEventListener("mousemove", handleMouseMove);
-      document.addEventListener("mouseup", handleMouseUp);
-    }}
-    style={{
-      position:"absolute",
-      right:0,
-      top:0,
-      width:"4px",
-      height:"100%",
-      cursor:"col-resize",
-      background:"#f59e0b",
-      opacity:0,
-      transition:"opacity 0.2s"
-    }}
-    onMouseEnter={(e) => e.target.style.opacity = "0.8"}
-    onMouseLeave={(e) => e.target.style.opacity = "0"}
-  />
-</th>
-            <th style={{ padding:"8px 6px", textAlign:"left", color:"#64748b", fontWeight:700, whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a", minWidth:"100px" }}>Chq./Ref</th>
-            <th style={{ padding:"8px 6px", textAlign:"left", color:"#64748b", fontWeight:700, whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a", minWidth:"80px" }}>{selectedBankTab === "VASB" ? "Mode" : "Value Dt"}</th>
-            <th style={{ padding:"8px 6px", textAlign:"right", color:"#64748b", fontWeight:700, whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a", minWidth:"100px" }}>Withdrawal</th>
-            <th style={{ padding:"8px 6px", textAlign:"right", color:"#64748b", fontWeight:700, whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a", minWidth:"100px" }}>Deposit</th>
-            <th style={{ padding:"8px 6px", textAlign:"right", color:"#64748b", fontWeight:700, whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a", minWidth:"120px" }}>CB (Bank)</th>
-            <th style={{ padding:"8px 6px", textAlign:"right", color:"#64748b", fontWeight:700, whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a", minWidth:"120px" }}>CB (Calc)</th>
-            <th style={{ padding:"8px 6px", textAlign:"center", color:"#64748b", fontWeight:700, whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a", minWidth:"80px" }}>Status</th>
-            <th style={{ padding:"8px 6px", textAlign:"center", color:"#64748b", fontWeight:700, whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a", minWidth:"80px" }}>REF NO</th>
-            <th style={{ padding:"8px 6px", textAlign:"left", color:"#64748b", fontWeight:700, whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a", minWidth:"100px" }}>PARTY</th>
-            <th style={{ padding:"8px 6px", textAlign:"center", color:"#64748b", fontWeight:700, whiteSpace:"nowrap", minWidth:"80px" }}>ACTION</th>
-          </tr>
-        </thead>
-        <tbody>
- {(() => {
-  // Sort by true bank sequence: date first, paste-order (created_at) as same-day tiebreaker
-  const toComparable = (dateStr) => {
-    const parts = String(dateStr || "").split('-');
-    if (parts.length !== 3) return "00000000";
-    let [day, month, year] = parts;
-    if (year.length === 2) year = "20" + year;
-    return year + month.padStart(2, '0') + day.padStart(2, '0');
-  };
+   {/* Bank Data Table with Validation (virtualized) */}
+    <div style={{ width:"100vw", marginLeft:"calc(50% - 50vw)", borderRadius:8, border:"1px solid #1e2a3a", height:"700px", padding:"0 20px", boxSizing:"border-box" }}>
+      {(() => {
+        const toComparable = (dateStr) => {
+          const parts = String(dateStr || "").split('-');
+          if (parts.length !== 3) return "00000000";
+          let [day, month, year] = parts;
+          if (year.length === 2) year = "20" + year;
+          return year + month.padStart(2, '0') + day.padStart(2, '0');
+        };
 
-  const full = [...bankingData[selectedBankTab]].sort((a, b) => {
-    const da = toComparable(a.date), db = toComparable(b.date);
-    if (da !== db) return da.localeCompare(db);
-    return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
-  });
+        const full = [...bankingData[selectedBankTab]].sort((a, b) => {
+          const da = toComparable(a.date), db = toComparable(b.date);
+          if (da !== db) return da.localeCompare(db);
+          return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+        });
 
-  // Derive opening from the FIRST transaction's own closing balance:
-  // opening = firstClosing + firstWithdrawal - firstDeposit
-  const first = full[0];
-  const opening = first
-    ? (parseFloat(first.closingBalance) || 0) + (parseFloat(first.withdrawalAmt) || 0) - (parseFloat(first.depositAmt) || 0)
-    : 0;
+        const first = full[0];
+        const opening = first
+          ? (parseFloat(first.closingBalance) || 0) + (parseFloat(first.withdrawalAmt) || 0) - (parseFloat(first.depositAmt) || 0)
+          : 0;
+        let prevBalance = opening;
+        const cbMap = {};
+        for (const t of full) {
+          const calculatedCB = prevBalance + t.depositAmt - t.withdrawalAmt;
+          cbMap[t.id] = calculatedCB;
+          prevBalance = calculatedCB;
+        }
 
-  // Compute running balance forward on the sorted list
-  let prevBalance = opening;
-  const cbMap = {};   // id -> calculated closing balance
-  for (const t of full) {
-    const calculatedCB = prevBalance + t.depositAmt - t.withdrawalAmt;
-    cbMap[t.id] = calculatedCB;
-    prevBalance = calculatedCB;
-  }
+    const fromCompBank = bankFromDate ? bankFromDate.replace(/-/g, '') : "";
+        const norm = (v) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const targets = (v) => {
+          const raw = String(v ?? "");
+          const out = [norm(raw)];
+          const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+          if (m) out.push(`${m[3]}${m[2]}${m[1]}`); // DDMMYYYY
+          return out;
+        };
+        let bq = norm(partyFilterBank);
+        const bdmy = partyFilterBank.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+        if (bdmy) bq = `${bdmy[1].padStart(2,"0")}${bdmy[2].padStart(2,"0")}${bdmy[3]}`;
+        const searchFields = (t) => [t.date, t.narration, t.chqRef, t.withdrawalAmt, t.depositAmt, t.partyName, t.linkedRefNo];
+        const filtered = full.filter(t => {
+          const matchText = !partyFilterBank ||
+            searchFields(t).some(v => targets(v).some(x => x.includes(bq)));
+          const matchDate = !fromCompBank || toComparable(t.date) >= fromCompBank;
+          return matchText && matchDate;
+        });
 
-// 2. Filter only for display
-  const toCompBank = (dateStr) => {
-    const p = String(dateStr || "").split('-');
-    if (p.length !== 3) return "00000000";
-    let [d, m, y] = p;
-    if (y.length === 2) y = "20" + y;
-    return y + m.padStart(2, '0') + d.padStart(2, '0');
-  };
-  const fromCompBank = bankFromDate ? bankFromDate.replace(/-/g, '') : "";
-  const filtered = full.filter(t => {
-    const matchText = !partyFilterBank ||
-      t.date.includes(partyFilterBank) ||
-      t.narration.toLowerCase().includes(partyFilterBank.toLowerCase()) ||
-      t.chqRef.toLowerCase().includes(partyFilterBank.toLowerCase()) ||
-      t.withdrawalAmt.toString().includes(partyFilterBank) ||
-      t.depositAmt.toString().includes(partyFilterBank);
-    const matchDate = !fromCompBank || toCompBank(t.date) >= fromCompBank;
-    return matchText && matchDate;
-  });
+        const fyOf = (dateStr) => {
+          if (!dateStr) return "";
+          const parts = String(dateStr).split(/[-/]/);
+          if (parts.length !== 3) return "";
+          const monthNames = { jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, oct:10, nov:11, dec:12 };
+          const rawMonth = parts[1].trim().toLowerCase();
+          let mm = monthNames[rawMonth.slice(0,3)] || parseInt(parts[1], 10);
+          let yy = parseInt(parts[2], 10);
+          if (isNaN(mm) || isNaN(yy)) return "";
+          if (yy < 100) yy += 2000;
+          const startY = mm < 4 ? yy - 1 : yy;
+          return `${startY}-${String((startY + 1) % 100).padStart(2, "0")}`;
+        };
 
-  // Compute FY (e.g. "2026-27") from a transaction date
-const fyOf = (dateStr) => {
-    if (!dateStr) return "";
-    const parts = String(dateStr).split(/[-/]/); // handles - or /
-    if (parts.length !== 3) return "";
+        const items = [];
+        let prevFY = null;
+        filtered.forEach(trans => {
+          const thisFY = fyOf(trans.date);
+          if (thisFY && thisFY !== prevFY) {
+            items.push({ type: "separator", fy: thisFY, key: `sep-${thisFY}` });
+            prevFY = thisFY;
+          }
+          const calculatedCB = cbMap[trans.id];
+          const isValid = selectedBankTab === "VASB"
+            ? Math.abs(Math.abs(calculatedCB) - Math.abs(trans.closingBalance)) < 1
+            : Math.abs(calculatedCB - trans.closingBalance) < 1;
+          items.push({ type: "row", trans, calculatedCB, isValid, key: trans.id });
+        });
 
-    const dd = parseInt(parts[0], 10);
-    let mm;
+        const handleLinkRow = (trans) => {
+          const refNo = prompt(`Link to Ref No?\n\nParty: ${trans.narration.split('-')[1] || "Unknown"}`);
+          if (refNo) {
+            const partyName = prompt("Enter Party Name:");
+            if (partyName) handleLinkBankTransaction(trans.id, refNo, partyName);
+          }
+        };
+        const handleUnlinkRow = async (trans) => {
+          const newTrans = { ...trans, linkedRefNo: "", linkedFy: "", partyName: "" };
+          const ok = await updateBankTransaction(newTrans);
+          if (!ok) { showToast("Failed to save — check connection", "error"); return; }
+          setBankingData(prev => ({
+            ...prev,
+            [selectedBankTab]: prev[selectedBankTab].map(t => t.id === trans.id ? newTrans : t)
+          }));
+          setLinkedTransactions(prev => { const u = { ...prev }; delete u[trans.linkedRefNo]; return u; });
+          showToast("Unlinked");
+        };
 
-    // Month can be numeric ("04") or a name ("Apr")
-    const monthNames = { jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, oct:10, nov:11, dec:12 };
-    const rawMonth = parts[1].trim().toLowerCase();
-    if (monthNames[rawMonth.slice(0,3)]) {
-      mm = monthNames[rawMonth.slice(0,3)];   // "apr" → 4
-    } else {
-      mm = parseInt(parts[1], 10);            // "04" → 4
-    }
+        const cols = BANK_MAIN_COLS.map(c => c.key === "narration" ? { ...c, w: narrationWidth } : c);
 
-    let yy = parseInt(parts[2], 10);
-    if (isNaN(mm) || isNaN(yy)) return "";
-    if (yy < 100) yy += 2000;                 // "26" → 2026
+        if (filtered.length === 0) {
+          return <div style={{ padding:20, textAlign:"center", color:"#64748b" }}>No matching transactions.</div>;
+        }
 
-    const startY = mm < 4 ? yy - 1 : yy;      // Jan-Mar belong to previous FY
-    return `${startY}-${String((startY + 1) % 100).padStart(2, "0")}`;
-  };
-
-  let prevFY = null;
-
-  return filtered.map((trans, idx) => {
-   const calculatedCB = cbMap[trans.id];
-    const isValid = selectedBankTab === "VASB"
-      ? Math.abs(Math.abs(calculatedCB) - Math.abs(trans.closingBalance)) < 1
-      : Math.abs(calculatedCB - trans.closingBalance) < 1;
-
-    // FY break: separator when this row's FY differs from the previous row's
-    const thisFY = fyOf(trans.date);
-    const showBreak = thisFY && thisFY !== prevFY;
-    prevFY = thisFY;
-
-    return (
-    <React.Fragment key={trans.id}>
-      {showBreak && (
-        <tr>
-          <td colSpan={12} style={{ padding:"6px 10px", background:"#1a2236", borderTop:"2px solid #f59e0b", borderBottom:"2px solid #f59e0b", color:"#f59e0b", fontWeight:800, fontSize:11, letterSpacing:"1px", textAlign:"center" }}>
-            ◄ FINANCIAL YEAR {thisFY} ►
-          </td>
-        </tr>
-      )}
-      <tr style={{ borderBottom:"1px solid #1e2a3a", background: idx % 2 === 0 ? "#0f1117" : "#151b2a" }}>
-        <td style={{ padding:"6px 6px", color:"#cbd5e1", whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a" }}>{trans.date}</td>
-        <td style={{ padding:"6px 6px", color:"#cbd5e1", textAlign:"left", whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a", maxWidth: narrationWidth, overflow:"hidden", textOverflow:"ellipsis" }}>{trans.narration}</td>
-        <td style={{ padding:"6px 6px", color:"#cbd5e1", whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a" }}>{trans.chqRef}</td>
-      <td style={{ padding:"6px 6px", color:"#cbd5e1", whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a" }}>{selectedBankTab === "VASB" ? trans.mode : trans.valueDt}</td>
-        <td style={{ padding:"6px 6px", color:"#cbd5e1", textAlign:"right", whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a" }}>₹{trans.withdrawalAmt ? trans.withdrawalAmt.toLocaleString() : "-"}</td>
-        <td style={{ padding:"6px 6px", color:"#cbd5e1", textAlign:"right", whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a" }}>₹{trans.depositAmt ? trans.depositAmt.toLocaleString() : "-"}</td>
-        <td style={{ padding:"6px 6px", color:"#cbd5e1", textAlign:"right", whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a" }}>₹{trans.closingBalance.toLocaleString()}</td>
-        <td style={{ padding:"6px 6px", color: isValid ? "#22c55e" : "#ef4444", textAlign:"right", whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a", fontWeight:700 }}>₹{calculatedCB.toLocaleString()}</td>
-        <td style={{ padding:"6px 6px", textAlign:"center", whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a" }}>
-          <span style={{ color: isValid ? "#22c55e" : "#ef4444", fontWeight:700 }}>
-            {isValid ? "✓" : "✗"}
-          </span>
-        </td>
-        <td style={{ padding:"6px 6px", color: trans.linkedRefNo ? "#22c55e" : "#ef4444", fontWeight:700, textAlign:"center", whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a" }}>
-          {trans.linkedRefNo
-            ? <>✓ {trans.linkedRefNo}{trans.linkedFy ? <span style={{ color:"#64748b", fontWeight:600, fontSize:9, marginLeft:4 }}>({trans.linkedFy})</span> : ""}</>
-            : "-"}
-        </td>
-        <td style={{ padding:"6px 6px", color:"#cbd5e1", whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a" }}>
-          {trans.partyName || "-"}
-        </td>
-        <td style={{ padding:"6px 6px", textAlign:"center", whiteSpace:"nowrap" }}>
-          {trans.linkedRefNo ? (
-            <button
-              onClick={async () => {
-               const newTrans = { ...trans, linkedRefNo: "", linkedFy: "", partyName: "" };
-                const ok = await updateBankTransaction(newTrans);
-                if (!ok) { showToast("Failed to save — check connection", "error"); return; }
-                setBankingData(prev => ({
-                  ...prev,
-                  [selectedBankTab]: prev[selectedBankTab].map(t => t.id === trans.id ? newTrans : t)
-                }));
-                setLinkedTransactions(prev => {
-                  const updated = { ...prev };
-                  delete updated[trans.linkedRefNo];
-                  return updated;
-                });
-                showToast("Unlinked");
-              }}
-              style={{ background:"#ef4444", border:"none", borderRadius:4, padding:"4px 8px", color:"#fff", fontWeight:700, fontSize:10, cursor:"pointer" }}
-            >
-              Unlink
-            </button>
-          ) : (
-            <button
-              onClick={() => {
-                const refNo = prompt(`Link to Ref No?\n\nParty: ${trans.narration.split('-')[1] || "Unknown"}`);
-                if (refNo) {
-                  const partyName = prompt("Enter Party Name:");
-                  if (partyName) {
-                    handleLinkBankTransaction(trans.id, refNo, partyName);
-                  }
-                }
-              }}
-              style={{ background:"#38bdf8", border:"none", borderRadius:4, padding:"4px 8px", color:"#fff", fontWeight:700, fontSize:10, cursor:"pointer" }}
-            >
-              Link
-            </button>
-          )}
-        </td>
-  </tr>
-    </React.Fragment>
-    );
-  });
-})()}
-        </tbody>
-      </table>
-    </div>
-    
+        return (
+          <TableVirtuoso
+            style={{ height:"100%" }}
+            data={items}
+            computeItemKey={(_, item) => item.key}
+            components={makeBankMainComponents(narrationWidth)}
+            fixedHeaderContent={() => (
+              <tr style={{ background:"#151b2a" }}>
+                {cols.map((c, i) => (
+                  <th key={i} style={{ padding:"8px 6px", textAlign:c.align, color:"#64748b", fontWeight:700, whiteSpace:"nowrap", background:"#151b2a", borderRight: i < cols.length - 1 ? "1px solid #1e2a3a" : "none", position: c.key === "narration" ? "relative" : undefined, userSelect: c.key === "narration" ? "none" : undefined }}>
+                    {c.key === "valueDt" ? (selectedBankTab === "VASB" ? "Mode" : "Value Dt") : c.label}
+                    {c.key === "narration" && (
+                      <div
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const startX = e.clientX;
+                          const startWidth = narrationWidth;
+                          const onMove = (ev) => setNarrationWidth(Math.max(150, startWidth + (ev.clientX - startX)));
+                          const onUp = () => {
+                            document.removeEventListener("mousemove", onMove);
+                            document.removeEventListener("mouseup", onUp);
+                          };
+                          document.addEventListener("mousemove", onMove);
+                          document.addEventListener("mouseup", onUp);
+                        }}
+                        style={{ position:"absolute", right:0, top:0, width:"5px", height:"100%", cursor:"col-resize", background:"#f59e0b", opacity:0, transition:"opacity .2s" }}
+                        onMouseEnter={(e) => e.currentTarget.style.opacity = "0.8"}
+                        onMouseLeave={(e) => e.currentTarget.style.opacity = "0"}
+                      />
+                    )}
+                  </th>
+                ))}
+              </tr>
+            )}
+            itemContent={(_, item) => (
+              <BankMainRow item={item} bankTab={selectedBankTab} narrationWidth={narrationWidth} onLink={handleLinkRow} onUnlink={handleUnlinkRow} />
+            )}
+          />
+        );
+      })()}
+    </div>    
     {bankingData[selectedBankTab].length === 0 && (
       <div style={{ padding:20, textAlign:"center", color:"#64748b" }}>No bank data. Click "Paste Bank Data" to import.</div>
     )}
@@ -6395,10 +6392,20 @@ gunnyWeight: hasGunny(salesRec) ? salesRec.gunnyWeight : (parseFloat(dataRec.gun
       const m = s.match(/^(\d+)(.*)$/);
       return m ? { num: parseInt(m[1], 10), suf: m[2].toUpperCase() } : { num: Infinity, suf: s.toUpperCase() };
     };
+const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const targets = (v) => {
+      const raw = String(v ?? "");
+      const out = [norm(raw)];
+      const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (m) out.push(`${m[3]}${m[2]}${m[1]}`); // DDMMYYYY
+      return out;
+    };
+    let q = norm(salesSearch);
+    const dmy = salesSearch.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+    if (dmy) q = `${dmy[1].padStart(2,"0")}${dmy[2].padStart(2,"0")}${dmy[3]}`;
     const workingFiltered = salesWorkingData
       .filter(r => !salesSearch ||
-        r.refNo.toString().includes(salesSearch) ||
-        r.partyName.toLowerCase().includes(salesSearch.toLowerCase())
+        Object.values(r).some(v => targets(v).some(t => t.includes(q)))
       )
       .sort((a, b) => {
         const pa = parseRef(a.refNo), pb = parseRef(b.refNo);
