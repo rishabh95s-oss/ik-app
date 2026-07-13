@@ -4325,13 +4325,13 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
           body * { visibility: hidden !important; }
           .hisab-controls { display: none !important; }
           #hisab-print, #hisab-print * { visibility: visible !important; }
-        #hisab-print {
+      #hisab-print {
             position: absolute !important;
             left: 50% !important;
             top: 1.5mm !important;
-            transform: translateX(-50%) scale(.97) !important;
+            transform: translateX(-50%) !important;
             transform-origin: top center !important;
-            margin: 0 !important;
+            zoom: 0.92 !important;
             background: #fff !important;
             box-shadow: none !important;
           }
