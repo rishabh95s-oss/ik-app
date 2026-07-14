@@ -7786,10 +7786,21 @@ const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
           );
         })()}
       </div>
+
 {view === "purchaseSalesReconcile" && (() => {
   // ── Build Maps ONCE — O(n) instead of O(n²) ──
   const salesByRefNo = new Map(salesWorkingData.map(s => [s.refNo, s]));
   const recordsByRefNo = new Map(records.map(r => [r.refNo, r]));
+
+  const parseRef = (ref) => {
+    const s = String(ref || "").trim();
+    const m = s.match(/^(\d+)(.*)$/);
+    return m ? { num: parseInt(m[1], 10), suf: m[2].toUpperCase() } : { num: Infinity, suf: s.toUpperCase() };
+  };
+  const byRefNo = (getRef) => (a, b) => {
+    const pa = parseRef(getRef(a)), pb = parseRef(getRef(b));
+    return pa.num !== pb.num ? pa.num - pb.num : pa.suf.localeCompare(pb.suf);
+  };
 
   const exactMatches = records.filter(r => {
     const s = salesByRefNo.get(r.refNo);
@@ -7797,7 +7808,8 @@ const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
       (!purchaseSalesSearch ||
         r.refNo.toString().includes(purchaseSalesSearch) ||
         r.deliveryAt.toLowerCase().includes(purchaseSalesSearch.toLowerCase()));
-  }).map(r => ({ purchase: r, sales: salesByRefNo.get(r.refNo) }));
+  }).map(r => ({ purchase: r, sales: salesByRefNo.get(r.refNo) }))
+    .sort(byRefNo(x => x.purchase.refNo));
 
   const partyMismatch = records.filter(r => {
     const s = salesByRefNo.get(r.refNo);
@@ -7805,22 +7817,23 @@ const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
       (!purchaseSalesSearch ||
         r.refNo.toString().includes(purchaseSalesSearch) ||
         r.deliveryAt.toLowerCase().includes(purchaseSalesSearch.toLowerCase()));
-  }).map(r => ({ purchase: r, sales: salesByRefNo.get(r.refNo) }));
+  }).map(r => ({ purchase: r, sales: salesByRefNo.get(r.refNo) }))
+    .sort((a, b) => (a.sales.partyName || "").localeCompare(b.sales.partyName || ""));
 
-  const orphanedPurchases = records.filter(r =>
+const orphanedPurchases = records.filter(r =>
     !salesByRefNo.has(r.refNo) &&
     (!purchaseSalesSearch ||
       r.refNo.toString().includes(purchaseSalesSearch) ||
       r.deliveryAt.toLowerCase().includes(purchaseSalesSearch.toLowerCase()))
-  );
+  ).sort(byRefNo(r => r.refNo));
 
-  const orphanedSales = salesWorkingData.filter(s =>
+const orphanedSales = salesWorkingData.filter(s =>
     !recordsByRefNo.has(s.refNo) &&
     !ignoredSalesParties.includes(s.partyName) &&
     (!purchaseSalesSearch ||
       s.refNo.toString().includes(purchaseSalesSearch) ||
       s.partyName.toLowerCase().includes(purchaseSalesSearch.toLowerCase()))
-  );
+  ).sort(byRefNo(s => s.refNo));
 
   const handleLink = (refNo) => showToast(`Linked: ${refNo}`, "success");
  const handleUpdate = async (refNo, newParty) => {
@@ -7996,7 +8009,7 @@ const handleUnignore = async (party) => {
           <div style={{ borderRadius:8, border:"1px solid #1e2a3a", overflowX:"auto" }}>
             <TableVirtuoso
               style={{ height: Math.min(ignoredSalesParties.length * 35 + 40, 400) }}
-              data={ignoredSalesParties.map(party => ({ party, count: salesWorkingData.filter(s => s.partyName === party).length }))}
+             data={[...ignoredSalesParties].sort((a, b) => a.localeCompare(b)).map(party => ({ party, count: salesWorkingData.filter(s => s.partyName === party).length }))}
               computeItemKey={(_, item) => item.party}
               components={makeTableComponents(300)}
               fixedHeaderContent={() => (
