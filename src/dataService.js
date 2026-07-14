@@ -669,8 +669,17 @@ export async function loadLoanParties() {
     id: r.id,
     partyName: r.party_name,
     pan: r.pan || "",
-    panVerified: !!r.pan_verified
+    panVerified: !!r.pan_verified,
+    form15h: !!r.form_15h
   }));
+}
+
+export async function updateLoanPartyForm15h(partyName, value) {
+  const { error } = await supabase.from('loan_parties')
+    .update({ form_15h: !!value })
+    .eq('party_name', partyName);
+  if (error) { console.error('updateLoanPartyForm15h:', error.message); return false; }
+  return true;
 }
 
 export async function addLoanParty(partyName) {
@@ -770,6 +779,9 @@ export async function addLoanInterestEvent(ev) {
     interest_amt: ev.interestAmt,
     interest_tds: ev.interestTds,
     net_party: ev.netParty,
+    interest_rate: ev.interestRate ?? null,
+    brokerage_rate: ev.brokerageRate ?? null,
+    form_15h: ev.form15h ?? false,
     payment_date: ev.paymentDate,
     financial_year: ev.financialYear
   });
@@ -792,9 +804,9 @@ export async function addLoanBrokerageAccrual(ac) {
 export async function loadLoanInterestEvents() {
   const { data, error } = await supabase
     .from('loan_interest_events')
-    .select(`
+.select(`
       id, term_months, term_days, interest_amt, interest_tds, net_party,
-      payment_date, financial_year,
+      interest_rate, brokerage_rate, form_15h, payment_date, financial_year,
       loans ( party_name, broker_name, principal, interest_rate, brokerage_rate, due_date )
     `)
     .order('payment_date');
@@ -804,13 +816,14 @@ export async function loadLoanInterestEvents() {
     partyName: r.loans?.party_name || "",
     brokerName: r.loans?.broker_name || "",
     principal: r.loans?.principal || 0,
-    interestRate: r.loans?.interest_rate || 0,
-    brokerageRate: r.loans?.brokerage_rate || 0,
+    interestRate: r.interest_rate ?? r.loans?.interest_rate ?? 0,
+    brokerageRate: r.brokerage_rate ?? r.loans?.brokerage_rate ?? 0,
     termMonths: r.term_months,
     termDays: r.term_days,
     interestAmt: r.interest_amt || 0,
     interestTds: r.interest_tds || 0,
     netParty: r.net_party || 0,
+    form15h: !!r.form_15h,
     paymentDate: r.payment_date,
     financialYear: r.financial_year,
     dueDate: r.loans?.due_date || null
@@ -946,8 +959,9 @@ export async function loadLoansWithTerms() {
     .from('loans')
     .select(`
       *,
-      loan_interest_events ( id, term_number, start_date, due_date, term_months,
-                             interest_amt, interest_tds, net_party, payment_date, financial_year ),
+     loan_interest_events ( id, term_number, start_date, due_date, term_months,
+                             interest_amt, interest_tds, net_party, interest_rate, brokerage_rate,
+                             payment_date, financial_year ),
       loan_brokerage_accruals ( term_number, amount )
     `)
     .order('created_at');
@@ -956,7 +970,7 @@ export async function loadLoansWithTerms() {
     const brokByTerm = {};
     (r.loan_brokerage_accruals || []).forEach(a => { brokByTerm[a.term_number] = a.amount; });
     const terms = (r.loan_interest_events || [])
-      .map(t => ({
+    .map(t => ({
         id: t.id,
         termNumber: t.term_number,
         startDate: t.start_date,
@@ -965,6 +979,8 @@ export async function loadLoansWithTerms() {
         interestAmt: t.interest_amt || 0,
         interestTds: t.interest_tds || 0,
         netParty: t.net_party || 0,
+        interestRate: t.interest_rate ?? 0,
+        brokerageRate: t.brokerage_rate ?? 0,
         brokerage: brokByTerm[t.term_number] || 0,
         paymentDate: t.payment_date,
         financialYear: t.financial_year
@@ -985,11 +1001,19 @@ export async function loadLoansWithTerms() {
   });
 }
 
+export async function updateLoanRates(loanId, interestRate, brokerageRate) {
+  const { error } = await supabase.from('loans')
+    .update({ interest_rate: interestRate, brokerage_rate: brokerageRate })
+    .eq('id', loanId);
+  if (error) { console.error('updateLoanRates:', error.message); return false; }
+  return true;
+}
+
 // Settle a non-fixed loan: write interest event + brokerage accrual, then close it.
 
 export async function settleNonFixedLoan(loanId, s) {
   // 1. Interest event (term_number 1, day-based)
-  const { error: e1 } = await supabase.from('loan_interest_events').insert({
+const { error: e1 } = await supabase.from('loan_interest_events').insert({
     loan_id: loanId,
     term_number: 1,
     start_date: s.startDate,
@@ -999,6 +1023,7 @@ export async function settleNonFixedLoan(loanId, s) {
     interest_amt: s.interest,
     interest_tds: s.tds,
     net_party: s.netParty,
+    form_15h: s.form15h ?? false,
     payment_date: s.settlementDate,
     financial_year: s.financialYear
   });

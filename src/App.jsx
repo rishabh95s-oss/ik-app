@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { IMPORTED_DATA } from "./importedData.js";
-import { loadRecords, upsertRecord, deleteRecord, loadSalesFlash, replaceSalesFlash, loadPurchaseFlash, replacePurchaseFlash, loadSalesWorking, upsertWorkingRow, upsertWorkingBatch, deleteWorkingRow, loadParties, addParty, deleteParty, loadBrokers, addBroker, deleteBroker, loadDeliveries, addDelivery, deleteDelivery, loadClaimRules, upsertClaimRule, deleteClaimRule, loadAppUsers, upsertAppUser, deleteAppUser, loadBankTransactions, upsertBankTransactions, updateBankTransaction, deleteBankTransaction, renamePurchaseParty, renamePurchaseDeliveryAt, renameSalesWorkingParty, renameClaimRuleParty, countPurchasesByParty, countPurchasesByDeliveryAt, countSalesWorkingByParty, countClaimRulesByParty, loadPmtLinkedSlots, upsertPmtLinkedSlot, deletePmtLinkedSlot, loadPartyPans, updatePartyPan, updatePartyPanVerified, loadFinancialYears, createFinancialYear, loadLoanParties, addLoanParty, deleteLoanParty, updateLoanPartyPan, updateLoanPartyPanVerified, loadLoanBrokers, addLoanBroker, deleteLoanBroker, updateLoanBrokerPan, updateLoanBrokerPanVerified, createLoan, addLoanInterestEvent, addLoanBrokerageAccrual, loadLoanInterestEvents, loadActiveFixedLoans, updateLoanDueDate, loadLoanBrokerageAccruals, loadLoanBrokeragePayments, addLoanBrokeragePayment, deleteLoanTerm, loadLoansWithTerms, settleNonFixedLoan, deleteNonFixedLoan, loadBanks, addBank, deleteBank,  loadIgnoredSalesParties, addIgnoredSalesParty, deleteIgnoredSalesParty, deleteBankTransactionsByDate, countLinkedOnDate } from "./dataService.js";
+import { loadRecords, upsertRecord, deleteRecord, loadSalesFlash, replaceSalesFlash, loadPurchaseFlash, replacePurchaseFlash, loadSalesWorking, upsertWorkingRow, upsertWorkingBatch, deleteWorkingRow, loadParties, addParty, deleteParty, loadBrokers, addBroker, deleteBroker, loadDeliveries, addDelivery, deleteDelivery, loadClaimRules, upsertClaimRule, deleteClaimRule, loadAppUsers, upsertAppUser, deleteAppUser, loadBankTransactions, upsertBankTransactions, updateBankTransaction, deleteBankTransaction, renamePurchaseParty, renamePurchaseDeliveryAt, renameSalesWorkingParty, renameClaimRuleParty, countPurchasesByParty, countPurchasesByDeliveryAt, countSalesWorkingByParty, countClaimRulesByParty, loadPmtLinkedSlots, upsertPmtLinkedSlot, deletePmtLinkedSlot, loadPartyPans, updatePartyPan, updatePartyPanVerified, loadFinancialYears, createFinancialYear, loadLoanParties, addLoanParty, deleteLoanParty, updateLoanPartyPan, updateLoanPartyPanVerified, loadLoanBrokers, addLoanBroker, deleteLoanBroker, updateLoanBrokerPan, updateLoanBrokerPanVerified, createLoan, addLoanInterestEvent, addLoanBrokerageAccrual, loadLoanInterestEvents, loadActiveFixedLoans, updateLoanDueDate, loadLoanBrokerageAccruals, loadLoanBrokeragePayments, addLoanBrokeragePayment, deleteLoanTerm, loadLoansWithTerms, settleNonFixedLoan, deleteNonFixedLoan, updateLoanRates , updateLoanPartyForm15h, loadBanks, addBank, deleteBank,  loadIgnoredSalesParties, addIgnoredSalesParty, deleteIgnoredSalesParty, deleteBankTransactionsByDate, countLinkedOnDate } from "./dataService.js";
 import { TableVirtuoso } from "react-virtuoso";
 import { supabase } from './supabaseClient.js';
 
@@ -296,7 +296,7 @@ claims.map((claim) => (
   );
 }
 // Loan interest + brokerage calculation. All money rounded to whole rupees.
-function calcLoan({ principal, interestRate, brokerageRate, loanType, months, days }) {
+function calcLoan({ principal, interestRate, brokerageRate, loanType, months, days, noTds }) {
   const P = parseFloat(principal) || 0;
   const iRate = parseFloat(interestRate) || 0;
   const bRate = parseFloat(brokerageRate) || 0;
@@ -306,9 +306,9 @@ function calcLoan({ principal, interestRate, brokerageRate, loanType, months, da
     ? (parseFloat(months) || 0)
     : ((parseFloat(days) || 0) / 30);
 
-  // Interest (both types have 10% TDS)
+  // Interest — 10% TDS, UNLESS party has 15G/15H on file (noTds) → zero TDS
   const interest = Math.round(P * (iRate / 100) * timeFactor);
-  const interestTDS = Math.round(interest * 10 / 100);
+  const interestTDS = noTds ? 0 : Math.round(interest * 10 / 100);
   const netParty = interest - interestTDS;
 
   // Brokerage accrual (no TDS at accrual — TDS is at payment time)
@@ -3025,6 +3025,8 @@ const fyFromDate = (dateStr) => {
   return `${startY}-${String((startY + 1) % 100).padStart(2, "0")}`;
 };
 
+const is15h = (partyName) => !!loanParties.find(p => p.partyName === partyName)?.form15h;
+
 const handleSaveLoan = async () => {
   const f = loanForm;
 
@@ -3036,11 +3038,10 @@ const handleSaveLoan = async () => {
   if (!f.startDate) { showToast("Enter start date", "error"); return; }
   if (f.loanType === "fixed" && !(parseFloat(f.months) > 0)) { showToast("Enter term months", "error"); return; }
 
-  const calc = calcLoan({
+const calc = calcLoan({
     principal: f.principal, interestRate: f.interestRate, brokerageRate: f.brokerageRate,
-    loanType: f.loanType, months: f.months, days: f.days
+    loanType: f.loanType, months: f.months, days: f.days, noTds: is15h(f.partyName)
   });
-
   // Term 1 window (fixed only)
   let dueDate = null;
   if (f.loanType === "fixed") {
@@ -3064,10 +3065,12 @@ const handleSaveLoan = async () => {
     const paymentDate = f.startDate; // interest paid upfront on start
     const fy = fyFromDate(paymentDate);
 
-    const evOk = await addLoanInterestEvent({
+  const evOk = await addLoanInterestEvent({
       loanId, termNumber: 1, startDate: f.startDate, dueDate,
       termMonths: parseFloat(f.months), termDays: null,
       interestAmt: calc.interest, interestTds: calc.interestTDS, netParty: calc.netParty,
+      interestRate: parseFloat(f.interestRate), brokerageRate: parseFloat(f.brokerageRate),
+      form15h: is15h(f.partyName),
       paymentDate, financialYear: fy
     });
     if (!evOk) { showToast("Loan saved, but interest event failed — check connection", "error"); return; }
@@ -3092,18 +3095,21 @@ const handleRenewLoan = async () => {
   const loan = activeFixedLoans.find(l => l.id === renewLoanId);
   if (!loan) { showToast("Select a loan to renew", "error"); return; }
   if (!(parseFloat(renewMonths) > 0)) { showToast("Enter renewal term (months)", "error"); return; }
+  if (!(parseFloat(renewInterestRate) >= 0)) { showToast("Enter renewal interest rate", "error"); return; }
+  if (!(parseFloat(renewBrokerageRate) >= 0)) { showToast("Enter renewal brokerage rate", "error"); return; }
   const months = parseFloat(renewMonths);
+  const iRate = parseFloat(renewInterestRate);
+  const bRate = parseFloat(renewBrokerageRate);
 
   // New term inherits its start from the latest term's due date
   const termStart = loan.dueDate;                 // derived latest due date from loadActiveFixedLoans
   const nextTerm = (loan.latestTerm || 0) + 1;
 
-  // Carry principal + rates from the loan
-  const calc = calcLoan({
-    principal: loan.principal, interestRate: loan.interestRate, brokerageRate: loan.brokerageRate,
-    loanType: "fixed", months, days: null
+  // Use the NEW rates entered for this renewal
+ const calc = calcLoan({
+    principal: loan.principal, interestRate: iRate, brokerageRate: bRate,
+    loanType: "fixed", months, days: null, noTds: is15h(loan.partyName)
   });
-
   // New term's due date = its start + renewal months
   const d = new Date(termStart);
   d.setMonth(d.getMonth() + Math.round(months));
@@ -3113,13 +3119,18 @@ const handleRenewLoan = async () => {
   const fy = fyFromDate(paymentDate);
 
   // 1. New interest event for this term
-  const evOk = await addLoanInterestEvent({
+const evOk = await addLoanInterestEvent({
     loanId: loan.id, termNumber: nextTerm, startDate: termStart, dueDate: newDueDate,
     termMonths: months, termDays: null,
     interestAmt: calc.interest, interestTds: calc.interestTDS, netParty: calc.netParty,
+    interestRate: iRate, brokerageRate: bRate,
+    form15h: is15h(loan.partyName),
     paymentDate, financialYear: fy
   });
   if (!evOk) { showToast("Renew failed at interest event — check connection", "error"); return; }
+
+  // Keep the loan's stored rate in sync with the latest renewal
+  await updateLoanRates(loan.id, iRate, bRate);
 
   // 2. New brokerage accrual for this term
   const acOk = await addLoanBrokerageAccrual({
@@ -3135,8 +3146,10 @@ const handleRenewLoan = async () => {
   setLoansWithTerms(await loadLoansWithTerms());
 
   showToast(`Renewed — Term ${nextTerm}, new due date ${newDueDate.split("-").reverse().join("-")}`);
-  setRenewLoanId("");
+setRenewLoanId("");
   setRenewMonths("");
+  setRenewInterestRate("");
+  setRenewBrokerageRate("");
 };
   
     const handleAddUser = async () => {
@@ -3836,6 +3849,8 @@ const [loanInterestEvents, setLoanInterestEvents] = useState([]);
 const [activeFixedLoans, setActiveFixedLoans] = useState([]);
 const [renewLoanId, setRenewLoanId] = useState("");
 const [renewMonths, setRenewMonths] = useState("");
+const [renewInterestRate, setRenewInterestRate] = useState("");
+const [renewBrokerageRate, setRenewBrokerageRate] = useState("");
 const [loanBrokerageAccruals, setLoanBrokerageAccruals] = useState([]);   
 const [loanBrokeragePayments, setLoanBrokeragePayments] = useState([]);   
 const [brokeragePmtModal, setBrokeragePmtModal] = useState(null); 
@@ -8095,7 +8110,7 @@ const handleUnignore = async (party) => {
    {loanSubTab === "manage" && (() => {
       const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 
-      const renderList = ({ title, list, newVal, setNewVal, addFn, nameKey, delFn, panFn, verFn, reload }) => (
+      const renderList = ({ title, list, newVal, setNewVal, addFn, nameKey, delFn, panFn, verFn, form15hFn, reload }) => (
         <div style={{ background:"#151b2a", border:"1px solid #1e2a3a", borderRadius:10, padding:16 }}>
           <div style={{ fontSize:13, fontWeight:700, color:"#f59e0b", marginBottom:12 }}>{title}</div>
           <div style={{ display:"flex", gap:8, marginBottom:15 }}>
@@ -8134,7 +8149,7 @@ const handleUnignore = async (party) => {
                     }}
                     style={{ width:130, background: isVerified ? "#0f1117" : "#151b2a", border:"1px solid #1e2a3a", borderRadius:4, padding:"4px 6px", color: isVerified ? "#64748b" : "#e2e8f0", fontSize:11, textTransform:"uppercase", outline:"none", flexShrink:0, cursor: isVerified ? "not-allowed" : "text" }}
                   />
-                  <label style={{ display:"flex", alignItems:"center", gap:4, fontSize:10, color: isVerified ? "#22c55e" : "#64748b", cursor:"pointer", flexShrink:0, whiteSpace:"nowrap" }}>
+               <label style={{ display:"flex", alignItems:"center", gap:4, fontSize:10, color: isVerified ? "#22c55e" : "#64748b", cursor:"pointer", flexShrink:0, whiteSpace:"nowrap" }}>
                     <input
                       type="checkbox"
                       checked={isVerified}
@@ -8152,6 +8167,23 @@ const handleUnignore = async (party) => {
                     />
                     Verified
                   </label>
+                  {form15hFn && (
+                    <label style={{ display:"flex", alignItems:"center", gap:4, fontSize:10, color: item.form15h ? "#f59e0b" : "#64748b", cursor:"pointer", flexShrink:0, whiteSpace:"nowrap" }}>
+                      <input
+                        type="checkbox"
+                        checked={!!item.form15h}
+                        onChange={async (e) => {
+                          const want = e.target.checked;
+                          const ok = await form15hFn(name, want);
+                          if (!ok) { showToast("Failed to save", "error"); return; }
+                          reload();
+                          showToast(want ? `15G/15H set for ${name} — no TDS on interest` : `15G/15H removed for ${name}`);
+                        }}
+                        style={{ cursor:"pointer", width:13, height:13 }}
+                      />
+                      15G/H
+                    </label>
+                  )}
                   <button
                     onClick={async () => {
                        if (!window.confirm(`Delete "${name}"? This cannot be undone.`)) return;
@@ -8171,10 +8203,11 @@ const handleUnignore = async (party) => {
 
       return (
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(340px, 1fr))", gap:20 }}>
-          {renderList({
+         {renderList({
             title:"LOAN PARTIES", list:loanParties, newVal:newLoanParty, setNewVal:setNewLoanParty,
             addFn:addLoanPartyHandler, nameKey:"partyName",
             delFn:deleteLoanParty, panFn:updateLoanPartyPan, verFn:updateLoanPartyPanVerified,
+            form15hFn:updateLoanPartyForm15h,
             reload: async () => setLoanParties(await loadLoanParties())
           })}
           {renderList({
@@ -8191,7 +8224,7 @@ const handleUnignore = async (party) => {
       const set = (k, v) => setLoanForm(prev => ({ ...prev, [k]: v }));
       const calc = calcLoan({
         principal: f.principal, interestRate: f.interestRate, brokerageRate: f.brokerageRate,
-        loanType: f.loanType, months: f.months, days: f.days
+        loanType: f.loanType, months: f.months, days: f.days, noTds: is15h(f.partyName)
       });
       const inp = { background:"#0f1117", border:"1px solid #1e2a3a", borderRadius:8, padding:"9px 12px", color:"#e2e8f0", fontSize:13, outline:"none", width:"100%", boxSizing:"border-box" };
       const lbl = { fontSize:11, color:"#64748b", fontWeight:600, marginBottom:5, display:"block" };
@@ -8275,9 +8308,9 @@ const handleUnignore = async (party) => {
             <div style={{ fontSize:14, fontWeight:800, color:"#f59e0b", marginBottom:16 }}>🔄 RENEW FIXED LOAN</div>
             {(() => {
               const rl = activeFixedLoans.find(l => l.id === renewLoanId);
-              const rCalc = rl ? calcLoan({
-                principal: rl.principal, interestRate: rl.interestRate, brokerageRate: rl.brokerageRate,
-                loanType: "fixed", months: renewMonths, days: null
+          const rCalc = rl ? calcLoan({
+                principal: rl.principal, interestRate: renewInterestRate, brokerageRate: renewBrokerageRate,
+                loanType: "fixed", months: renewMonths, days: null, noTds: is15h(rl.partyName)
               }) : null;
               const rDue = (rl && parseFloat(renewMonths) > 0) ? (() => {
                 const d = new Date(rl.dueDate); d.setMonth(d.getMonth() + Math.round(parseFloat(renewMonths)));
@@ -8302,6 +8335,14 @@ const handleUnignore = async (party) => {
                     <div>
                       <label style={lbl}>Renewal Term (months)</label>
                       <input style={inp} type="number" step="0.01" value={renewMonths} onChange={e => setRenewMonths(e.target.value)} placeholder="e.g. 2" />
+                    </div>
+                    <div>
+                      <label style={lbl}>Interest Rate (% per month)</label>
+                      <input style={inp} type="number" step="0.01" value={renewInterestRate} onChange={e => setRenewInterestRate(e.target.value)} placeholder="e.g. 0.95" />
+                    </div>
+                    <div>
+                      <label style={lbl}>Brokerage Rate (% per month)</label>
+                      <input style={inp} type="number" step="0.01" value={renewBrokerageRate} onChange={e => setRenewBrokerageRate(e.target.value)} placeholder="e.g. 0.05" />
                     </div>
                   </div>
 
@@ -8748,7 +8789,8 @@ const handleUnignore = async (party) => {
         { label:"February", y:fyStartYear+1, m:2 }, { label:"March", y:fyStartYear+1, m:3 },
       ];
 
-      const is194A = loanTdsSection !== "194h";
+      const is194A = loanTdsSection === "194a";
+      const is15H = loanTdsSection === "15h";
 
       const partyPanFor = (name) => {
         const p = loanParties.find(x => x.partyName === name);
@@ -8760,7 +8802,7 @@ const handleUnignore = async (party) => {
       };
 
       // Build rows for the selected month
-      const rows = (() => {
+    const rows = (() => {
         if (!loanTdsMonth) return [];
         const [y, mo] = loanTdsMonth.split("-").map(Number);
         const inMonth = (dateStr) => {
@@ -8769,11 +8811,20 @@ const handleUnignore = async (party) => {
           return d.getFullYear() === y && (d.getMonth() + 1) === mo;
         };
         if (is194A) {
+          // Interest events WITH TDS deducted (exclude 15G/15H — those have no TDS)
           return loanInterestEvents
-            .filter(e => inMonth(e.paymentDate))
+            .filter(e => inMonth(e.paymentDate) && !e.form15h)
             .map(e => ({ date: e.paymentDate, name: e.partyName, pan: partyPanFor(e.partyName), amount: e.interestAmt, tds: e.interestTds }))
             .sort((a, b) => String(a.date).localeCompare(String(b.date)) || a.name.localeCompare(b.name));
         }
+        if (is15H) {
+          // Interest events under 15G/15H declaration — no TDS deducted
+          return loanInterestEvents
+            .filter(e => inMonth(e.paymentDate) && e.form15h)
+            .map(e => ({ date: e.paymentDate, name: e.partyName, pan: partyPanFor(e.partyName), amount: e.interestAmt, tds: 0 }))
+            .sort((a, b) => String(a.date).localeCompare(String(b.date)) || a.name.localeCompare(b.name));
+        }
+        // 194H brokerage
         return loanBrokeragePayments
           .filter(p => p.mode === "bank" && inMonth(p.paymentDate))
           .map(p => ({ date: p.paymentDate, name: p.brokerName, pan: brokerPanFor(p.brokerName), amount: p.amount, tds: p.brokerageTds }))
@@ -8783,7 +8834,7 @@ const handleUnignore = async (party) => {
       const totAmt = rows.reduce((s, r) => s + (r.amount || 0), 0);
       const totTds = rows.reduce((s, r) => s + (r.tds || 0), 0);
       const monthLabel = FY_MONTHS.find(fm => `${fm.y}-${fm.m}` === loanTdsMonth)?.label || "";
-      const amtLabel = is194A ? "Interest Amt" : "Brokerage";
+      const amtLabel = is194A ? "Interest Amt" : is15H ? "Interest Amt" : "Brokerage";
 
       const inp = { background:"#0f1117", border:"1px solid #1e2a3a", borderRadius:8, padding:"9px 12px", color:"#e2e8f0", fontSize:13, outline:"none", maxWidth:220 };
       const th = { padding:"10px 12px", textAlign:"left", color:"#64748b", fontWeight:700, fontSize:11, whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a" };
@@ -8800,7 +8851,7 @@ const handleUnignore = async (party) => {
         if (rows.length === 0) return;
         const w = window.open('', '', 'height=700,width=900');
         let html = `<style>@page{size:A4;margin:10mm}body{font-family:Arial,sans-serif}h2{font-size:15px;margin:0 0 10px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #000;padding:4px 8px;white-space:nowrap}th{background:#eee;text-align:left}.r{text-align:right}.tot{font-weight:bold;background:#ddd}.miss{color:#b00;font-weight:bold}</style>`;
-        html += `<h2>${is194A ? "194A INTEREST TDS" : "194H BROKERAGE TDS"} — ${monthLabel} ${activeFY}</h2>`;
+        html += `<h2>${is194A ? "194A INTEREST TDS" : is15H ? "15G/15H (NO TDS) — INTEREST" : "194H BROKERAGE TDS"} — ${monthLabel} ${activeFY}</h2>`;
         html += `<table><thead><tr><th>Payment Date</th><th>${is194A ? "Party" : "Broker"}</th><th>PAN</th><th class="r">${amtLabel}</th><th class="r">TDS</th></tr></thead><tbody>`;
         rows.forEach(r => {
           const pan = r.pan.pan ? `${r.pan.pan}${r.pan.verified ? " ✓" : " (unverified)"}` : `<span class="miss">PAN MISSING</span>`;
@@ -8829,12 +8880,12 @@ const handleUnignore = async (party) => {
         <div>
           <div style={{ display:"flex", gap:12, marginBottom:20, alignItems:"center", flexWrap:"wrap" }}>
             {/* SECTION TOGGLE */}
-            <div style={{ display:"flex", gap:6 }}>
-              {[["194a","194A Interest"],["194h","194H Brokerage"]].map(([id, label]) => (
+        <div style={{ display:"flex", gap:6 }}>
+              {[["194a","194A Interest"],["194h","194H Brokerage"],["15h","15G/15H"]].map(([id, label]) => (
                 <button key={id} onClick={() => setLoanTdsSection(id)}
                   style={{ padding:"9px 16px", borderRadius:8, border:"none", fontWeight:700, fontSize:12, cursor:"pointer",
-                    background: (is194A ? "194a" : "194h") === id ? "#f59e0b" : "#1e2a3a",
-                    color: (is194A ? "194a" : "194h") === id ? "#0f1117" : "#94a3b8" }}>
+                    background: loanTdsSection === id ? "#f59e0b" : "#1e2a3a",
+                    color: loanTdsSection === id ? "#0f1117" : "#94a3b8" }}>
                   {label}
                 </button>
               ))}
@@ -8853,8 +8904,8 @@ const handleUnignore = async (party) => {
             )}
           </div>
 
-          {!loanTdsMonth ? (
-            <div style={{ padding:40, textAlign:"center", color:"#64748b", fontSize:14 }}>Select a month to view its {is194A ? "194A interest" : "194H brokerage"} TDS entries.</div>
+          {!loanTdsMonth ? (<div style={{ padding:40, textAlign:"center", color:"#64748b", fontSize:14 }}>Select a month to view its {is194A ? "194A interest" : is15H ? "15G/15H (no-TDS interest)" : "194H brokerage"} TDS entries.</div>
+            
           ) : rows.length === 0 ? (
             <div style={{ padding:40, textAlign:"center", color:"#64748b", fontSize:14 }}>No entries for {monthLabel}.</div>
           ) : (
@@ -8863,7 +8914,7 @@ const handleUnignore = async (party) => {
                 <thead>
                   <tr style={{ background:"#151b2a" }}>
                     <th style={th}>Payment Date</th>
-                    <th style={th}>{is194A ? "Party Name" : "Broker Name"}</th>
+                    <th style={th}>{is194A || is15H ? "Party Name" : "Broker Name"}</th>
                     <th style={th}>PAN</th>
                     <th style={thR}>{amtLabel}</th>
                     <th style={{ ...thR, borderRight:"none" }}>TDS</th>
@@ -8909,11 +8960,10 @@ const handleUnignore = async (party) => {
         })();
 
         // Reuse calcLoan's non-fixed branch (timeFactor = days/30)
-        const calc = calcLoan({
+      const calc = calcLoan({
           principal: loan.principal, interestRate: loan.interestRate, brokerageRate: loan.brokerageRate,
-          loanType: "non_fixed", months: null, days
+          loanType: "non_fixed", months: null, days, noTds: is15h(loan.partyName)
         });
-
         const lblM = { fontSize:11, color:"#64748b", fontWeight:600, marginBottom:5, display:"block" };
         const inpM = { background:"#0f1117", border:"1px solid #1e2a3a", borderRadius:8, padding:"9px 12px", color:"#e2e8f0", fontSize:13, outline:"none", width:"100%", boxSizing:"border-box" };
         const valid = days > 0;
@@ -8961,7 +9011,7 @@ const handleUnignore = async (party) => {
                   onClick={async () => {
                     if (!valid) return;
                     const fy = fyFromDate(settleDate);
-                    const ok = await settleNonFixedLoan(loan.id, {
+                   const ok = await settleNonFixedLoan(loan.id, {
                       startDate: loan.startDate,
                       settlementDate: settleDate,
                       days,
@@ -8970,6 +9020,7 @@ const handleUnignore = async (party) => {
                       netParty: calc.netParty,
                       brokerage: calc.brokerage,
                       brokerName: loan.brokerName,
+                      form15h: is15h(loan.partyName),
                       financialYear: fy
                     });
                     if (!ok) { showToast("Failed to settle — check connection", "error"); return; }
