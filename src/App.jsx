@@ -1601,12 +1601,12 @@ function HisabReceipt({ rec, calcAll }) {
             <td colSpan={2} style={{ fontSize:fs(14), fontStyle:"italic", textAlign:"right", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>PARTY BILL AMT.</td>
             <td style={{ fontSize:fs(20), textAlign:"left", padding:"0px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{h(c.partyBillAmt)}</td>
           </tr>
-          <tr style={rh(16)}>
+         <tr style={rh(16)}>
             <td colSpan={2} style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-            <td style={{ fontSize:fs(20), textAlign:"right", verticalAlign:"top", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{c.shortage > 0 ? (-c.shortage).toFixed(2) : ""}</td>
-            <td style={{ fontSize:fs(16), textAlign:"left", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{c.shortage > 0 ? "SHTG" : ""}</td>
+            <td style={{ fontSize:fs(20), textAlign:"right", verticalAlign:"top", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{c.shortage !== 0 ? (-c.shortage).toFixed(2) : ""}</td>
+            <td style={{ fontSize:fs(16), textAlign:"left", padding:"0px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{c.shortage !== 0 ? (c.shortage > 0 ? "SHTG" : "EXCESS") : ""}</td>
             <td colSpan={2} style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-           </tr> 
+           </tr>
           <tr style={rh(16)}>
             <td colSpan={2} style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
             <td style={{ fontSize:fs(20), textAlign:"right", padding:"0px 4px", whiteSpace:"nowrap", overflow:"hidden" }}>{c.halfKgQty > 0 ? (-c.halfKgQty).toFixed(2) : ""}</td>
@@ -5071,18 +5071,39 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
             {/* LIVE CALC PANEL */}
             <div style={{ background:"linear-gradient(135deg,#1a1f2e,#0f1117)", border:"1px solid #2a3a50", borderRadius:14, padding:"20px 22px", position:"sticky", top:20 }}>
               <div style={{ fontSize:11, fontWeight:700, letterSpacing:"1px", textTransform:"uppercase", color:"#38bdf8", marginBottom:16 }}>⚡ Live Calculation</div>
-              {[
-                ["Shortage Qty", calc.shortage + " Qt", false],
-                ["0.5 KG Qty Deduct", calc.halfKgQty + " Qt", false],
-                ["Gunny Deduct", calc.gunnyDeduct + " Qt", false],
-                ["Net Qty", calc.netQty + " Qt", false],
-                ["Net Amt 1 (Gross)", "₹ " + fmt(calc.netAmt1), false],
-                ["CD Amount", "₹ " + fmt(calc.cdAmt), false],
-                ["Brokerage", "₹ " + fmt(calc.brokerageAmt), false],
-                ["Net Amount", "₹ " + fmt(calc.netAmt), false],
-                ["TDS (Auto)", "₹ " + fmt(autoTDS), false],
-                ["Final Amount", "₹ " + fmt(calc.finalAmt), false],
-              ].map(([l,v]) => (
+        {(() => {
+                // Adjustment display: sign by intent (deductSign = stored sign meaning "deduct")
+                const adj = (val, deductSign) => {
+                  const v = parseFloat(val) || 0;
+                  if (v === 0) return null;
+                  const isDeduct = Math.sign(v) === deductSign;
+                  return (isDeduct ? "− ₹" : "+ ₹") + fmt(Math.abs(v));
+                };
+                const rows = [
+               ["Party Bill Amt", "₹ " + fmt(calc.partyBillAmt)],
+                 ["Bill Qty", (parseFloat(form.billQty) || 0) ? (parseFloat(form.billQty)).toFixed(2) + " Qt" : null],
+                  [calc.shortage < 0 ? "Excess Qty" : "Shortage Qty",
+                    calc.shortage ? (calc.shortage < 0 ? "+ " : "− ") + Math.abs(calc.shortage).toFixed(2) + " Qt" : null],
+                  ["0.5 KG Qty Deduct", calc.halfKgQty ? "− " + Math.abs(calc.halfKgQty).toFixed(2) + " Qt" : null],
+                  ["Gunny Deduct", calc.gunnyDeduct ? "− " + Math.abs(calc.gunnyDeduct).toFixed(3) + " Qt" : null],
+                  ["Net Qty", calc.netQty.toFixed(2) + " Qt"],
+                  ["Gross (Net Qty × Rate)", "₹ " + fmt(calc.netAmt1)],
+                  ["CD Amount", calc.cdAmt ? "− ₹" + fmt(calc.cdAmt) : null],
+                  ["Quality Claim", (parseFloat(form.qualityClaim) || 0) ? "− ₹" + fmt(parseFloat(form.qualityClaim)) : null],
+                  ["Hammali", adj(form.hammali, 1)],
+                  ["Freight", adj(form.freight, 1)],
+                  ["Mandi Exp", adj(form.mandiTax, 1)],
+                  ["Driver Expense", adj(form.driverExpense, 1)],
+                  ["Others", adj(form.others, -1)],
+                  ["Brokerage", calc.brokerageAmt ? "− ₹" + fmt(calc.brokerageAmt) : null],
+                  ["TDS (Auto)", autoTDS ? "− ₹" + fmt(autoTDS) : null],
+                 ["Final Amount", "₹ " + fmt(calc.finalAmt)],
+                  ["Bank Pmt 1", (parseFloat(form.bankAmt1) || 0) ? "− ₹" + fmt(parseFloat(form.bankAmt1)) + (form.bankName1 ? ` (${form.bankName1})` : "") : null],
+                  ["Bank Pmt 2", (parseFloat(form.bankAmt2) || 0) ? "− ₹" + fmt(parseFloat(form.bankAmt2)) + (form.bankName2 ? ` (${form.bankName2})` : "") : null],
+                  ["Bank Pmt 3", (parseFloat(form.bankAmt3) || 0) ? "− ₹" + fmt(parseFloat(form.bankAmt3)) + (form.bankName3 ? ` (${form.bankName3})` : "") : null],
+                ];
+                return rows.filter(([, v]) => v !== null);
+              })().map(([l,v]) => (
                 <div key={l} style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:"1px solid #1e2a3a", fontSize:13 }}>
                   <span style={{ color:"#64748b" }}>{l}</span>
                   <span style={{ fontWeight:600, color:"#e2e8f0", fontVariantNumeric:"tabular-nums" }}>{v}</span>
@@ -5095,10 +5116,6 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
                 </span>
               </div>
               <div style={{ marginTop:12, padding:"10px 14px", background:"#0f1117", borderRadius:8, fontSize:12, color:"#64748b" }}>
-                <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
-                  <span>Party Bill Amt</span>
-                  <span style={{ color:"#94a3b8", fontWeight:600 }}>₹ {fmt(calc.partyBillAmt)}</span>
-                </div>
                {form.partyName && form.billDate && (() => {
                   const fyStartYear = parseInt(activeFY.split("-")[0], 10);
                   const FY_START = new Date(fyStartYear, 3, 1); // April 1 of active FY
