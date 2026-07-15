@@ -135,8 +135,9 @@ function purchaseRowToRecord(r) {
     billDate: r.bill_date || "", billNo: r.bill_no || "",
     rate: r.rate ?? "", billQty: r.bill_qty ?? "", receiveQty: r.receive_qty ?? "",
     halfKgValue: r.half_kg_value ?? "", gunnyWeight: r.gunny_weight ?? "", cdPct: r.cd_pct ?? "",
-    qualityClaim: r.quality_claim ?? "", hammali: r.hammali ?? "",
+  qualityClaim: r.quality_claim ?? "", hammali: r.hammali ?? "",
     freight: r.freight ?? "", others: r.others ?? "",
+    mandiTax: r.mandi_tax ?? "", driverExpense: r.driver_expense ?? "",
     brokerageRate: r.brokerage_rate ?? "", brokerageAmt: r.brokerage_amt ?? "",
     tcs: r.tcs ?? "",
     bankAmt1: r.bank_amt1 ?? "", bankDate1: r.bank_date1 || "", bankName1: r.bank_name1 || "",
@@ -170,6 +171,7 @@ function recordToPurchaseRow(r) {
     half_kg_value: num(r.halfKgValue), gunny_weight: num(r.gunnyWeight), cd_pct: num(r.cdPct),
     quality_claim: num(r.qualityClaim), hammali: num(r.hammali),
     freight: num(r.freight), others: num(r.others),
+    mandi_tax: num(r.mandiTax), driver_expense: num(r.driverExpense),
     brokerage_rate: num(r.brokerageRate), brokerage_amt: num(r.brokerageAmt),
     tcs: num(r.tcs),
     bank_amt1: num(r.bankAmt1), bank_date1: r.bankDate1, bank_name1: r.bankName1,
@@ -187,7 +189,9 @@ function recordToPurchaseRow(r) {
 export async function upsertRecord(record, financialYear) {
   const row = recordToPurchaseRow(record);
   row.financial_year = financialYear;
-  const { error } = await supabase.from('purchases').upsert(row, { onConflict: 'ref_no,financial_year' });
+  console.log("UPSERT ROW:", row);
+  const { data, error } = await supabase.from('purchases').upsert(row, { onConflict: 'ref_no,financial_year' }).select();
+  console.log("UPSERT RESULT:", { data, error });
   if (error) { console.error('upsertRecord:', error.message); return false; }
   return true;
 }

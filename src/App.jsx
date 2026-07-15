@@ -413,6 +413,8 @@ function calcAll(f, autoTDS = 0, cdRule = "standard") {
   const S = parseFloat(f.hammali) || 0;
   const T = parseFloat(f.freight) || 0;
   const U = parseFloat(f.others) || 0;
+  const MT = parseFloat(f.mandiTax) || 0;
+  const DE = parseFloat(f.driverExpense) || 0;
   const W = parseFloat(f.brokerageRate) || 0;
   const Y = autoTDS;
   const AA = parseFloat(f.bankAmt1) || 0;
@@ -426,7 +428,7 @@ function calcAll(f, autoTDS = 0, cdRule = "standard") {
   const Q = cdRule === "gross"
     ? Math.round(P * J * H / 100)
     : Math.round(((J * H) - R) * P / 100);
-  const V = Math.round(O - Q - R - S - T + U);
+  const V = Math.round(O - Q - R - S - T - MT - DE + U);
   const X = f.brokerageAmt ? (parseFloat(f.brokerageAmt) || 0) : Math.round(W * J);
   const Z = Math.round(V - X - Y);
   const AJ = Z - AA - AD - AG;
@@ -1422,7 +1424,8 @@ const EMPTY = {
   refNo:"", deliveryAt:"", truckNo:"", partyName:"", brokerName:"",
   billDate:"", billNo:"", rate:"", billQty:"", receiveQty:"",
   halfKgValue:"", gunnyWeight:"", cdPct:"", qualityClaim:"",
-  others:"", brokerageRate:"", brokerageAmt:"", tcs:"", note:"",
+  hammali:"", freight:"", others:"", mandiTax:"", driverExpense:"",
+  brokerageRate:"", brokerageAmt:"", tcs:"", note:"",
   bankAmt1:"", bankDate1:"", bankName1:"",
   bankAmt2:"", bankDate2:"", bankName2:"",
   bankAmt3:"", bankDate3:"", bankName3:"",
@@ -1529,6 +1532,15 @@ function HisabReceipt({ rec, calcAll }) {
   };
   const slotHasValue = (amt) => (parseFloat(amt) || 0) !== 0;
 
+  // Adjustment line: show when non-zero, with the correct sign.
+  // deductSign = the stored sign that means "deduction" for this field.
+  const adjAmt = (val, deductSign) => {
+    const v = parseFloat(val) || 0;
+    if (v === 0) return "";
+    const isDeduct = Math.sign(v) === deductSign;
+    return (isDeduct ? "-" : "+") + h(Math.abs(v));
+  };
+  const adjShow = (val) => (parseFloat(val) || 0) !== 0;
 
   return (
     <div className="hisab-page" style={{ background:"#fff", color:"#000", width:496, margin:"0 auto", fontFamily:"Arial,sans-serif" }}>
@@ -1628,19 +1640,26 @@ function HisabReceipt({ rec, calcAll }) {
             <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(rec.qualityClaim) > 0 ? "-"+h(parseFloat(rec.qualityClaim)) : ""}</td>
           </tr>
           <tr style={rh(25.95)}>
-            <td rowSpan={6} colSpan={3} style={{ borderLeft:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td>
-            <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(rec.freight) > 0 ? "FREIGHT" : ""}</td>
-            <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(rec.freight) > 0 ? "-"+h(parseFloat(rec.freight)) : ""}</td>
+            <td rowSpan={7} colSpan={3} style={{ borderLeft:thin, verticalAlign:"top", padding:"4px 6px", fontSize:fs(12), fontStyle:"italic", color:"#000", whiteSpace:"normal", overflow:"hidden" }}>{rec.note ? `Note: ${rec.note}` : ""}</td>
+            <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{adjShow(rec.freight) ? "FREIGHT" : ""}</td>
+            <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{adjAmt(rec.freight, 1)}</td>
           </tr>
           <tr style={rh(25.8)}>
-            <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(rec.hammali) > 0 ? "HAMMALI" : ""}</td>
-            <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(rec.hammali) > 0 ? "-"+h(parseFloat(rec.hammali)) : ""}</td>
+            <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{adjShow(rec.hammali) ? "HAMMALI" : ""}</td>
+            <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{adjAmt(rec.hammali, 1)}</td>
           </tr>
           <tr style={rh(25.8)}>
-            <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(rec.others) > 0 ? "OTHERS" : ""}</td>
-            <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{parseFloat(rec.others) > 0 ? "+"+h(parseFloat(rec.others)) : ""}</td>
+           <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{adjShow(rec.mandiTax) ? "MANDI EXP" : ""}</td>
+            <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{adjAmt(rec.mandiTax, 1)}</td>
           </tr>
-          <tr style={rh(25.8)}><td colSpan={3} style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td></tr>
+          <tr style={rh(25.8)}>
+            <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{adjShow(rec.driverExpense) ? "DRIVER EXP" : ""}</td>
+            <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{adjAmt(rec.driverExpense, 1)}</td>
+          </tr>
+          <tr style={rh(25.8)}>
+            <td colSpan={2} style={{ fontSize:fs(20), textAlign:"right", padding:"2px 4px" , whiteSpace:"nowrap", overflow:"hidden" }}>{adjShow(rec.others) ? "OTHERS" : ""}</td>
+            <td style={{ fontSize:fs(20), textAlign:"left", padding:"2px 6px", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>{adjAmt(rec.others, -1)}</td>
+          </tr>
           <tr style={rh(25.8)}><td colSpan={3} style={{ borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}></td></tr>
           <tr style={rh(27.6)}>
             <td colSpan={3} style={{ fontSize:fs(15), fontWeight:"bold", textAlign:"center", padding:"2px 4px", color:"#555", borderRight:thin , whiteSpace:"nowrap", overflow:"hidden" }}>
@@ -1704,11 +1723,6 @@ function HisabReceipt({ rec, calcAll }) {
             <td colSpan={2} style={{ fontSize:fs(20), fontWeight:"bold", textAlign:"left", padding:"4px 4px", borderTop:thin, borderBottom:thin , whiteSpace:"nowrap", overflow:"hidden" }}>BAL</td>
             <td style={{ fontSize:fs(20), fontWeight:"bold", textAlign:"left", padding:"4px 6px", borderTop:thin, borderBottom:thin, borderRight:thin, color: c.balance === 0 ? "#067647" : c.balance > 0 ? "#a90000" : "#067647" , whiteSpace:"nowrap", overflow:"hidden" }}>{h(c.balance)}</td>
           </tr>
-
-          {rec.note && <tr>
-            <td colSpan={6} style={{ padding:"5px 6px", fontSize:fs(12), color:"#000000", fontStyle:"italic" , whiteSpace:"nowrap", overflow:"hidden" }}>Note: {rec.note}</td>
-          </tr>}
-
         </tbody>
       </table>
     </div>
@@ -3919,6 +3933,9 @@ useEffect(() => {
   const [form, setForm] = useState({ ...EMPTY });
   const [editMode, setEditMode] = useState(false);
   const [search, setSearch] = useState("");
+  const [adjHead, setAdjHead] = useState("hammali");
+  const [adjAmount, setAdjAmount] = useState("");
+  const [adjDirection, setAdjDirection] = useState("deduct");
   const [bankFromDate, setBankFromDate] = useState("");
   const [filterParty, setFilterParty] = useState("");
   const [filterBroker, setFilterBroker] = useState("");
@@ -4888,15 +4905,6 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
                   <div><label style={lbl}>Quality Claim ₹</label>
                     <input type="number" name="qualityClaim" value={form.qualityClaim} onChange={handleChange} style={inp} placeholder="0" />
                   </div>
-                  <div><label style={lbl}>Hammali ₹</label>
-                    <input type="number" name="hammali" value={form.hammali} onChange={handleChange} style={inp} placeholder="0" />
-                  </div>
-                  <div><label style={lbl}>Freight ₹</label>
-                    <input type="number" name="freight" value={form.freight} onChange={handleChange} style={inp} placeholder="0" />
-                  </div>
-                  <div><label style={lbl}>Others ₹</label>
-                    <input type="number" name="others" value={form.others} onChange={handleChange} style={inp} placeholder="0" />
-                  </div>
                   <div><label style={lbl}>Brokerage Rate</label>
                     <input type="number" name="brokerageRate" value={form.brokerageRate} onChange={handleChange} style={inp} placeholder="0" />
                   </div>
@@ -4909,6 +4917,104 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
                 </div>
               </div>
 
+              {/* Section: Adjustments */}
+              <div style={sec}>
+                <div style={stitle}>Adjustments</div>
+                {(() => {
+                  // head → { label, field, deductSign }
+                  // deductSign = the sign written when "Deduct" is chosen (matches each field's formula convention)
+                  const HEADS = [
+                    { id:"hammali",       label:"Hammali",        field:"hammali",       deductSign: +1 },
+                    { id:"freight",       label:"Freight",        field:"freight",       deductSign: +1 },
+                    { id:"mandiTax",      label:"Mandi Exp",      field:"mandiTax",      deductSign: +1 },
+                    { id:"driverExpense", label:"Driver Expense", field:"driverExpense", deductSign: +1 },
+                    { id:"others",        label:"Others",         field:"others",        deductSign: -1 },
+                  ];
+
+                  const addAdjustment = () => {
+                    const amt = Math.abs(parseFloat(adjAmount) || 0);
+                    if (!(amt > 0)) { showToast("Enter an amount", "error"); return; }
+                    const head = HEADS.find(h => h.id === adjHead);
+                    if (!head) return;
+                    if (String(form[head.field] ?? "").trim() !== "") {
+                      showToast(`${head.label} already added — remove it first`, "error");
+                      return;
+                    }
+                    const sign = adjDirection === "deduct" ? head.deductSign : -head.deductSign;
+                    setForm(p => ({ ...p, [head.field]: String(sign * amt) }));
+                    setAdjAmount("");
+                  };
+
+                  const removeAdjustment = (field) => setForm(p => ({ ...p, [field]: "" }));
+
+                  // Existing lines derived from the form's field values
+                  const lines = HEADS
+                    .map(h => {
+                      const raw = parseFloat(form[h.field]);
+                      if (isNaN(raw) || raw === 0) return null;
+                      const isDeduct = Math.sign(raw) === h.deductSign;
+                      return { ...h, amount: Math.abs(raw), isDeduct };
+                    })
+                    .filter(Boolean);
+
+                  const used = new Set(lines.map(l => l.id));
+                  const available = HEADS.filter(h => !used.has(h.id));
+
+                  return (
+                    <>
+                      {available.length > 0 && (
+                        <div style={{ display:"grid", gridTemplateColumns:"1.2fr 1fr 1fr auto", gap:12, alignItems:"end", marginBottom: lines.length ? 16 : 0 }}>
+                          <div>
+                            <label style={lbl}>Head</label>
+                            <select value={available.some(a => a.id === adjHead) ? adjHead : available[0].id}
+                              onChange={e => setAdjHead(e.target.value)} style={inp}>
+                              {available.map(h => <option key={h.id} value={h.id}>{h.label}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <label style={lbl}>Amount ₹</label>
+                            <input type="number" value={adjAmount} onChange={e => setAdjAmount(e.target.value)}
+                              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addAdjustment(); } }}
+                              style={inp} placeholder="0" />
+                          </div>
+                          <div>
+                            <label style={lbl}>Direction</label>
+                            <select value={adjDirection} onChange={e => setAdjDirection(e.target.value)} style={inp}>
+                              <option value="deduct">Deduct (−)</option>
+                              <option value="add">Add (+)</option>
+                            </select>
+                          </div>
+                          <button onClick={addAdjustment}
+                            style={{ background:"#22c55e", border:"none", borderRadius:8, padding:"9px 20px", color:"#fff", fontWeight:700, fontSize:13, cursor:"pointer", height:38 }}>
+                            + Add
+                          </button>
+                        </div>
+                      )}
+
+                      {lines.length === 0 ? (
+                        <div style={{ fontSize:12, color:"#64748b", padding:"8px 0" }}>No adjustments on this bill.</div>
+                      ) : (
+                        <div>
+                          {lines.map(l => (
+                            <div key={l.id} style={{ display:"flex", alignItems:"center", gap:12, padding:"9px 12px", background:"#0f1117", borderRadius:6, marginBottom:6 }}>
+                              <span style={{ fontSize:12, color:"#e2e8f0", fontWeight:600, minWidth:120 }}>{l.label}</span>
+                              <span style={{ fontSize:12, color: l.isDeduct ? "#ef4444" : "#22c55e", fontWeight:700 }}>
+                                {l.isDeduct ? "−" : "+"} ₹{l.amount.toLocaleString("en-IN")}
+                              </span>
+                              <span style={{ fontSize:10, color:"#64748b" }}>{l.isDeduct ? "Deduct" : "Add"}</span>
+                              <button onClick={() => removeAdjustment(l.field)}
+                                style={{ marginLeft:"auto", background:"#ef4444", border:"none", borderRadius:4, padding:"4px 10px", color:"#fff", fontWeight:700, fontSize:11, cursor:"pointer" }}>
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+              
               {/* Section 3: Payments */}
               <div style={sec}>
                 <div style={stitle}>Bank Payments Received</div>
@@ -7423,7 +7529,7 @@ const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
       const visibleKeys = isSummaryMode 
         ? summaryColumns.filter(key => filtered.some(r => r[key] && String(r[key]).trim() && String(r[key]).trim() !== "0"))
         : columnsToUse.filter(key => filtered.some(r => r[key] && String(r[key]).trim()));
-      const columnOrder = ["_bankLinked","refNo", "deliveryAt", "truckNo", "partyName", "brokerName", "billDate", "billNo", "rate", "billQty", "receiveQty", "_shortage", "halfKgValue", "gunnyWeight", "_halfKgQty", "_netQty", "_netAmt1", "cdPct", "_cdAmt", "qualityClaim", "hammali", "freight", "others", "_netAmt", "brokerageRate","_brokerageAmt", "_tds", "_finalAmt", "bankAmt1", "bankDate1", "bankName1", "bankAmt2", "bankDate2", "bankName2", "bankAmt3", "bankDate3", "bankName3", "_balance", "note"];
+     const columnOrder = ["_bankLinked","refNo", "deliveryAt", "truckNo", "partyName", "brokerName", "billDate", "billNo", "rate", "billQty", "receiveQty", "_shortage", "halfKgValue", "gunnyWeight", "_halfKgQty", "_netQty", "_netAmt1", "cdPct", "_cdAmt", "qualityClaim", "hammali", "freight", "mandiTax", "driverExpense", "others", "_netAmt", "brokerageRate","_brokerageAmt", "_tds", "_finalAmt", "bankAmt1", "bankDate1", "bankName1", "bankAmt2", "bankDate2", "bankName2", "bankAmt3", "bankDate3", "bankName3", "_balance", "note"];
       const sortedVisibleKeys = [...visibleKeys].sort((a, b) => {
         const aIdx = columnOrder.indexOf(a);
         const bIdx = columnOrder.indexOf(b);
