@@ -189,9 +189,7 @@ function recordToPurchaseRow(r) {
 export async function upsertRecord(record, financialYear) {
   const row = recordToPurchaseRow(record);
   row.financial_year = financialYear;
-  console.log("UPSERT ROW:", row);
-  const { data, error } = await supabase.from('purchases').upsert(row, { onConflict: 'ref_no,financial_year' }).select();
-  console.log("UPSERT RESULT:", { data, error });
+  const { error } = await supabase.from('purchases').upsert(row, { onConflict: 'ref_no,financial_year' });
   if (error) { console.error('upsertRecord:', error.message); return false; }
   return true;
 }
