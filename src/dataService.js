@@ -1102,3 +1102,74 @@ export async function deleteIgnoredSalesParty(party) {
   if (error) { console.error('deleteIgnoredSalesParty', error); return false; }
   return true;
 }
+
+export async function exportFullBackup() {
+  const tables = [
+    "app_users","bank_transactions","banks","brokers","claim_rules",
+    "deliveries","financial_years","ignored_sales_parties",
+    "loan_brokerage_accruals","loan_brokerage_payments","loan_brokers",
+    "loan_interest_events","loan_parties","loans","parties",
+    "pmt_linked_slots","purchase_flash","purchases","sales_flash",
+    "sales_working","users"
+  ];
+  const backup = { _app: "ik-app", _exportedAt: new Date().toISOString(), _tables: {} };
+  const errors = [];
+  for (const t of tables) {
+    
+    // paginate in case any table exceeds the default 1000-row cap
+    
+    let all = [], from = 0;
+    while (true) {
+      const { data, error } = await supabase.from(t).select('*').range(from, from + 999);
+      if (error) { errors.push(`${t}: ${error.message}`); break; }
+      all = all.concat(data);
+      if (data.length < 1000) break;
+      from += 1000;
+    }
+    backup._tables[t] = all;
+  }
+  return { backup, errors };
+}
+export async function importFullBackup(backup) {
+ 
+  // conflict key per table
+ 
+  const CONFLICT = {
+    app_users: "id", bank_transactions: "id", banks: "name", brokers: "id",
+    claim_rules: "id", deliveries: "id", financial_years: "fy",
+    ignored_sales_parties: "party_name", loan_brokerage_accruals: "id",
+    loan_brokerage_payments: "id", loan_brokers: "id", loan_interest_events: "id",
+    loan_parties: "id", loans: "id", parties: "id",
+    pmt_linked_slots: "ref_no,financial_year", purchase_flash: "ref_no,financial_year",
+    purchases: "id", sales_flash: "id", sales_working: "id", users: "id",
+  };
+
+  // dependency order: parents/masters first, children last
+  
+  const ORDER = [
+    "financial_years", "banks", "app_users", "users",
+    "parties", "brokers", "deliveries", "ignored_sales_parties", "claim_rules",
+    "loan_parties", "loan_brokers",
+    "purchases", "sales_flash", "sales_working", "purchase_flash",
+    "bank_transactions", "pmt_linked_slots",
+    "loans", "loan_interest_events", "loan_brokerage_accruals", "loan_brokerage_payments",
+  ];
+
+  const tables = backup?._tables || {};
+  const results = [];
+
+  for (const t of ORDER) {
+    const rows = tables[t];
+    if (!Array.isArray(rows) || rows.length === 0) { results.push({ table: t, count: 0, status: "empty/skip" }); continue; }
+    // upsert in chunks of 500
+    let ok = 0, err = null;
+    for (let i = 0; i < rows.length; i += 500) {
+      const chunk = rows.slice(i, i + 500);
+      const { error } = await supabase.from(t).upsert(chunk, { onConflict: CONFLICT[t] });
+      if (error) { err = error.message; break; }
+      ok += chunk.length;
+    }
+    results.push({ table: t, count: ok, status: err ? `ERROR: ${err}` : "ok" });
+  }
+  return results;
+}

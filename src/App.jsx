@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { IMPORTED_DATA } from "./importedData.js";
-import { loadRecords, upsertRecord, deleteRecord, loadSalesFlash, replaceSalesFlash, loadPurchaseFlash, replacePurchaseFlash, loadSalesWorking, upsertWorkingRow, upsertWorkingBatch, deleteWorkingRow, loadParties, addParty, deleteParty, loadBrokers, addBroker, deleteBroker, loadDeliveries, addDelivery, deleteDelivery, loadClaimRules, upsertClaimRule, deleteClaimRule, loadAppUsers, upsertAppUser, deleteAppUser, loadBankTransactions, upsertBankTransactions, updateBankTransaction, deleteBankTransaction, renamePurchaseParty, renamePurchaseDeliveryAt, renameSalesWorkingParty, renameClaimRuleParty, countPurchasesByParty, countPurchasesByDeliveryAt, countSalesWorkingByParty, countClaimRulesByParty, loadPmtLinkedSlots, upsertPmtLinkedSlot, deletePmtLinkedSlot, loadPartyPans, updatePartyPan, updatePartyPanVerified, loadFinancialYears, createFinancialYear, loadLoanParties, addLoanParty, deleteLoanParty, updateLoanPartyPan, updateLoanPartyPanVerified, loadLoanBrokers, addLoanBroker, deleteLoanBroker, updateLoanBrokerPan, updateLoanBrokerPanVerified, createLoan, addLoanInterestEvent, addLoanBrokerageAccrual, loadLoanInterestEvents, loadActiveFixedLoans, updateLoanDueDate, loadLoanBrokerageAccruals, loadLoanBrokeragePayments, addLoanBrokeragePayment, deleteLoanTerm, loadLoansWithTerms, settleNonFixedLoan, deleteNonFixedLoan, updateLoanRates , updateLoanPartyForm15h, loadBanks, addBank, deleteBank,  loadIgnoredSalesParties, addIgnoredSalesParty, deleteIgnoredSalesParty, deleteBankTransactionsByDate, countLinkedOnDate } from "./dataService.js";
+import { loadRecords, upsertRecord, deleteRecord, loadSalesFlash, replaceSalesFlash, loadPurchaseFlash, replacePurchaseFlash, loadSalesWorking, upsertWorkingRow, upsertWorkingBatch, deleteWorkingRow, loadParties, addParty, deleteParty, loadBrokers, addBroker, deleteBroker, loadDeliveries, addDelivery, deleteDelivery, loadClaimRules, upsertClaimRule, deleteClaimRule, loadAppUsers, upsertAppUser, deleteAppUser, loadBankTransactions, upsertBankTransactions, updateBankTransaction, deleteBankTransaction, renamePurchaseParty, renamePurchaseDeliveryAt, renameSalesWorkingParty, renameClaimRuleParty, countPurchasesByParty, countPurchasesByDeliveryAt, countSalesWorkingByParty, countClaimRulesByParty, loadPmtLinkedSlots, upsertPmtLinkedSlot, deletePmtLinkedSlot, loadPartyPans, updatePartyPan, updatePartyPanVerified, loadFinancialYears, createFinancialYear, loadLoanParties, addLoanParty, deleteLoanParty, updateLoanPartyPan, updateLoanPartyPanVerified, loadLoanBrokers, addLoanBroker, deleteLoanBroker, updateLoanBrokerPan, updateLoanBrokerPanVerified, createLoan, addLoanInterestEvent, addLoanBrokerageAccrual, loadLoanInterestEvents, loadActiveFixedLoans, updateLoanDueDate, loadLoanBrokerageAccruals, loadLoanBrokeragePayments, addLoanBrokeragePayment, deleteLoanTerm, loadLoansWithTerms, settleNonFixedLoan, deleteNonFixedLoan, updateLoanRates , updateLoanPartyForm15h, loadBanks, addBank, deleteBank,  loadIgnoredSalesParties, addIgnoredSalesParty, deleteIgnoredSalesParty, deleteBankTransactionsByDate, countLinkedOnDate, exportFullBackup, importFullBackup } from "./dataService.js";
 import { TableVirtuoso } from "react-virtuoso";
 import { supabase } from './supabaseClient.js';
 
@@ -5170,6 +5170,79 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
 {view === "users" && currentUser.role === "Admin" && (
   <div>
     <h2 style={{ fontSize:20, fontWeight:800, color:"#f1f5f9", marginBottom:20 }}>USER MANAGEMENT</h2>
+    
+    <div style={{ marginBottom:20, padding:"16px 18px", background:"#151b2a", border:"1px solid #2a3a50", borderRadius:10, display:"flex", alignItems:"center", gap:14, flexWrap:"wrap" }}>
+                <div style={{ flex:1, minWidth:200 }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:"#e2e8f0" }}>Full Backup</div>
+                  <div style={{ fontSize:11, color:"#64748b", marginTop:2 }}>Downloads every table as a JSON file. Keep it somewhere safe (Drive/OneDrive).</div>
+                </div>
+                <button
+                  onClick={async () => {
+                    showToast("Preparing backup…");
+                    try {
+                      const { backup, errors } = await exportFullBackup();
+                      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      const d = new Date();
+                      const stamp = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}_${String(d.getHours()).padStart(2,"0")}${String(d.getMinutes()).padStart(2,"0")}`;
+                      a.href = url;
+                      a.download = `ik-backup-${stamp}.json`;
+                      a.click();
+                      URL.revokeObjectURL(url);
+                      if (errors.length) {
+                        showToast(`Backup done, but ${errors.length} table(s) had errors — check console`, "error");
+                        console.error("Backup errors:", errors);
+                      } else {
+                        showToast("Backup downloaded ✓");
+                      }
+                    } catch (e) {
+                      showToast("Backup failed — check connection", "error");
+                      console.error("Backup failed:", e);
+                    }
+                  }}
+                  style={{ background:"#22c55e", border:"none", borderRadius:8, padding:"11px 22px", color:"#fff", fontWeight:700, fontSize:13, cursor:"pointer" }}>
+                  ⬇ Backup JSON
+                </button>
+              </div>
+    <div style={{ marginBottom:20, padding:"16px 18px", background:"#151b2a", border:"1px solid #f59e0b", borderRadius:10 }}>
+                <div style={{ fontSize:13, fontWeight:700, color:"#f59e0b" }}>Restore from Backup</div>
+                <div style={{ fontSize:11, color:"#64748b", margin:"2px 0 12px" }}>Uploads a backup JSON and merges it into the database (upsert). Existing rows are updated, missing rows re-created.</div>
+                <input
+                  type="file"
+                  accept="application/json"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = "";  // reset so same file can be re-picked
+                    if (!file) return;
+                    let backup;
+                    try {
+                      backup = JSON.parse(await file.text());
+                    } catch { showToast("Not a valid JSON file", "error"); return; }
+                    if (!backup?._tables) { showToast("This doesn't look like an ik-app backup", "error"); return; }
+                    const tableCount = Object.keys(backup._tables).length;
+                    const rowCount = Object.values(backup._tables).reduce((s, r) => s + (Array.isArray(r) ? r.length : 0), 0);
+                    if (!confirm(`Restore backup from ${backup._exportedAt || "unknown date"}?\n\n${tableCount} tables, ${rowCount} rows.\n\nThis MERGES into current data (upsert). Existing rows with matching keys are overwritten. Continue?`)) return;
+                    showToast("Restoring… do not close this tab");
+                    try {
+                      const results = await importFullBackup(backup);
+                      const failed = results.filter(r => r.status.startsWith("ERROR"));
+                      console.table(results);
+                      if (failed.length) {
+                        showToast(`Restore finished with ${failed.length} table error(s) — check console`, "error");
+                      } else {
+                        showToast("Restore complete ✓ — refresh to see data");
+                      }
+                    } catch (err) {
+                      showToast("Restore failed — check console", "error");
+                      console.error("Restore failed:", err);
+                    }
+                  }}
+                  style={{ fontSize:12, color:"#cbd5e1" }}
+                />
+              </div>
+    
+    
     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:24 }}>
       {currentUser.role === "Admin" && (
   <div style={{ marginBottom:24, padding:16, background:"#151b2a", border:"1px solid #1e2a3a", borderRadius:10 }}>
