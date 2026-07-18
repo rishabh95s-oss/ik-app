@@ -1423,7 +1423,7 @@ const SalesSummaryRow = React.memo(function SalesSummaryRow({ rec, cols }) {
 const EMPTY = {
   refNo:"", deliveryAt:"", truckNo:"", partyName:"", brokerName:"",
   billDate:"", billNo:"", rate:"", billQty:"", receiveQty:"",
-  halfKgValue:"", gunnyWeight:"", cdPct:"", qualityClaim:"",
+  halfKgValue:"", gunnyWeight:"", cdPct:"", qualityClaim:"", claimCalc:null,
   hammali:"", freight:"", others:"", mandiTax:"", driverExpense:"",
   brokerageRate:"", brokerageAmt:"", tcs:"", note:"",
   bankAmt1:"", bankDate1:"", bankName1:"",
@@ -3924,6 +3924,18 @@ useEffect(() => {
   const [view, setView] = useState("entry");
   const [form, setForm] = useState({ ...EMPTY });
   const [editMode, setEditMode] = useState(false);
+  const [editingRef, setEditingRef] = useState("");
+  const [claimCalcOpen, setClaimCalcOpen] = useState(false);
+  const [ccRecWt, setCcRecWt] = useState("");
+  const [ccRate, setCcRate] = useState("");
+  const [ccStarchBase, setCcStarchBase] = useState("60");
+  const [ccFungus, setCcFungus] = useState("");
+  const [ccAflatoxin, setCcAflatoxin] = useState("");
+  const [ccMoisture, setCcMoisture] = useState("");
+  const [ccSpoiled, setCcSpoiled] = useState("");
+  const [ccDust, setCcDust] = useState("");
+  const [ccStarch, setCcStarch] = useState("");
+  const [ccWeightDeduct, setCcWeightDeduct] = useState("");
   const [search, setSearch] = useState("");
   const [adjHead, setAdjHead] = useState("hammali");
   const [adjAmount, setAdjAmount] = useState("");
@@ -4017,7 +4029,17 @@ const hasBlankBroker = useMemo(() => {
       showToast("REF NO ALREADY EXISTS!", "error"); return;
     }
 
-  // Hard guard: bill date must be within the active financial year
+  // In edit mode, the ref must already exist — changing it to a new ref would
+    // wrongly clone the record. To create a related ref, use Link Ref A/B.
+   
+    if (editMode) {
+      if (refNo.toUpperCase() !== editingRef.trim().toUpperCase()) {
+        showToast(`You're editing ref ${editingRef} — the Ref No can't be changed. Use Link Ref A/B to create related refs.`, "error");
+        return;
+      }
+    }
+    
+    // Hard guard: bill date must be within the active financial year
     if (form.billDate) {
       const fyStartYear = parseInt(activeFY.split("-")[0], 10);
       const fyMin = `${fyStartYear}-04-01`;
@@ -4160,8 +4182,9 @@ setRecords(newRecords);
       }
     }
 
-    setForm({ ...EMPTY });
+  setForm({ ...EMPTY });
     setEditMode(false);
+    setEditingRef("");
   };
  
  // Apply an adjust-plan: write the transfer entries into bank slots across the cluster,
@@ -4208,13 +4231,14 @@ const applyAdjustPlan = async (plan) => {
   return true;
 };
 
-  const handleEditByRef = () => {
+const handleEditByRef = () => {
     const refNo = form.refNo.trim();
     if (!refNo) { showToast("ENTER REF NO FIRST", "error"); return; }
     const found = records.find(r => r.refNo.trim().toUpperCase() === refNo.toUpperCase());
     if (!found) { showToast("REF NO NOT FOUND!", "error"); return; }
     setForm({ ...EMPTY, ...found });
     setEditMode(true);
+    setEditingRef(found.refNo);          
     showToast("DATA LOADED FOR EDITING");
   };
 
@@ -4249,12 +4273,22 @@ const handleDeleteEntry = async () => {
     setRecords(remaining);
     setForm({ ...EMPTY });
     setEditMode(false);
+    setEditingRef("");
     showToast(clearedCount > 0
       ? `RECORD DELETED! Cleared link on ${clearedCount} record(s).`
       : "RECORD DELETED!");
   };
   
-  const handleNew = () => { setForm({ ...EMPTY }); setEditMode(false); };
+  const handleNew = () => {
+  // Only confirm if the form has meaningful data to lose
+  const hasData = editMode || Object.entries(form).some(([k, v]) =>
+    k !== "billDate" && String(v ?? "").trim() !== "" && String(v ?? "").trim() !== (EMPTY[k] ?? "")
+  );
+  if (hasData && !confirm("Clear the form? Any unsaved changes will be lost.")) return;
+  setForm({ ...EMPTY });
+  setEditMode(false);
+  setEditingRef("");
+};
 
 const filtered = useMemo(() => {
     const parseRef = (ref) => {
@@ -4895,7 +4929,32 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
                     <input type="number" name="cdPct" value={form.cdPct} onChange={handleChange} style={inp} placeholder="0" />
                   </div>
                   <div><label style={lbl}>Quality Claim ₹</label>
-                    <input type="number" name="qualityClaim" value={form.qualityClaim} onChange={handleChange} style={inp} placeholder="0" />
+                    <div style={{ display:"flex", gap:6 }}>
+                      <input type="number" name="qualityClaim" value={form.qualityClaim} onChange={handleChange} style={{ ...inp, flex:1 }} placeholder="0" />
+                  <button type="button" onClick={() => {
+                          const s = form.claimCalc;
+                          if (s && typeof s === "object") {
+                            setCcRecWt(s.recWt ?? (form.receiveQty || ""));
+                            setCcRate(s.rate ?? (form.rate || ""));
+                            setCcStarchBase(s.starchBase ?? "60");
+                            setCcFungus(s.fungus ?? "");
+                            setCcAflatoxin(s.aflatoxin ?? "");
+                            setCcMoisture(s.moisture ?? "");
+                            setCcSpoiled(s.spoiled ?? "");
+                            setCcDust("");
+                            setCcStarch(s.starch ?? "");
+                            setCcWeightDeduct(s.weightDeduct ?? "");
+                          } else {
+                            setCcRecWt(form.receiveQty || "");
+                            setCcRate(form.rate || "");
+                            setCcFungus(""); setCcAflatoxin(""); setCcMoisture("");
+                            setCcSpoiled(""); setCcStarch(""); setCcWeightDeduct(""); setCcStarchBase("60");
+                          }
+                          setClaimCalcOpen(true);
+                        }}
+                        style={{ background:"#1e2a3a", border:"1px solid #2a3a50", borderRadius:8, padding:"0 12px", color:"#38bdf8", fontWeight:700, fontSize:16, cursor:"pointer" }}
+                        title="Claim Calculator">🧮</button>
+                    </div>
                   </div>
                   <div><label style={lbl}>Brokerage Rate</label>
                     <input type="number" name="brokerageRate" value={form.brokerageRate} onChange={handleChange} style={inp} placeholder="0" />
@@ -9325,6 +9384,112 @@ const handleUnignore = async (party) => {
         );
       })()}   
      
+      {claimCalcOpen && (() => {
+        const recWt = parseFloat(ccRecWt) || 0;
+        const rate = parseFloat(ccRate) || 0;
+        const base = parseFloat(ccStarchBase) || 60;
+        const pctLine = (pctStr) => {
+          const p = parseFloat(pctStr) || 0;
+          return p > 0 ? Math.round((p / 100) * recWt * rate) : 0;
+        };
+        const starchPct = (() => {
+          const a = parseFloat(ccStarch) || 0;
+          if (a <= 0) return 0;
+          return (1 - a / base) * 100;
+        })();
+        const starchLine = starchPct > 0 ? Math.round((starchPct / 100) * recWt * rate) : 0;
+        const weightLine = (() => {
+          const kg = parseFloat(ccWeightDeduct) || 0;
+          return kg > 0 ? Math.round((kg / 100) * rate) : 0;
+        })();
+      const lines = [
+          ["Fungus", ccFungus, setCcFungus, "% excess", pctLine(ccFungus)],
+          ["Aflatoxin", ccAflatoxin, setCcAflatoxin, "% excess", pctLine(ccAflatoxin)],
+          ["Moisture", ccMoisture, setCcMoisture, "% excess", pctLine(ccMoisture)],
+          ["Spoiled", ccSpoiled, setCcSpoiled, "% excess", pctLine(ccSpoiled)],
+          ["Dust", ccDust, setCcDust, "% excess", pctLine(ccDust)],
+        ];
+        const total = lines.reduce((s, l) => s + l[4], 0) + starchLine + weightLine;
+        const fld = { background:"#0f1117", border:"1px solid #2a3a50", borderRadius:6, padding:"7px 9px", color:"#e2e8f0", fontSize:13, outline:"none", width:"100%", boxSizing:"border-box" };
+        const cell = { padding:"7px 8px", fontSize:12, color:"#cbd5e1" };
+
+        return (
+          <div onClick={() => setClaimCalcOpen(false)} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.6)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:2000 }}>
+            <div onClick={e => e.stopPropagation()} style={{ background:"#151b2a", border:"1px solid #2a3a50", borderRadius:14, padding:24, width:560, maxWidth:"92vw", maxHeight:"90vh", overflowY:"auto" }}>
+              <div style={{ fontSize:15, fontWeight:800, color:"#38bdf8", marginBottom:16 }}>🧮 Quality Claim Calculator</div>
+
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:16 }}>
+                <div><label style={{ fontSize:11, color:"#64748b" }}>Received Weight (Qt)</label>
+                  <input type="number" value={ccRecWt} onChange={e => setCcRecWt(e.target.value)} style={fld} /></div>
+                <div><label style={{ fontSize:11, color:"#64748b" }}>Rate (₹/Qt)</label>
+                  <input type="number" value={ccRate} onChange={e => setCcRate(e.target.value)} style={fld} /></div>
+              </div>
+
+              <table style={{ width:"100%", borderCollapse:"collapse", marginBottom:16 }}>
+                <thead>
+                  <tr style={{ background:"#0f1117" }}>
+                    <th style={{ ...cell, textAlign:"left", color:"#64748b", fontWeight:700 }}>Parameter</th>
+                    <th style={{ ...cell, textAlign:"left", color:"#64748b", fontWeight:700 }}>Input</th>
+                    <th style={{ ...cell, textAlign:"right", color:"#64748b", fontWeight:700 }}>Claim ₹</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lines.map(([label, val, setter, hint, amt]) => (
+                    <tr key={label} style={{ borderBottom:"1px solid #1e2a3a" }}>
+                      <td style={cell}>{label}</td>
+                      <td style={cell}><input type="number" value={val} onChange={e => setter(e.target.value)} placeholder={hint} style={{ ...fld, width:120 }} /></td>
+                      <td style={{ ...cell, textAlign:"right", color:"#e2e8f0", fontWeight:600 }}>{amt ? "₹" + amt.toLocaleString("en-IN") : "—"}</td>
+                    </tr>
+                  ))}
+                  {/* Starch */}
+                  <tr style={{ borderBottom:"1px solid #1e2a3a" }}>
+                    <td style={cell}>Starch
+                      <div style={{ display:"flex", alignItems:"center", gap:4, marginTop:3 }}>
+                        <span style={{ fontSize:10, color:"#64748b" }}>base</span>
+                        <input type="number" value={ccStarchBase} onChange={e => setCcStarchBase(e.target.value)} style={{ ...fld, width:50, padding:"3px 5px", fontSize:11 }} />
+                      </div>
+                    </td>
+                    <td style={cell}>
+                      <input type="number" value={ccStarch} onChange={e => setCcStarch(e.target.value)} placeholder="actual (e.g. 59.4)" style={{ ...fld, width:120 }} />
+                      {starchPct > 0 && <div style={{ fontSize:10, color:"#38bdf8", marginTop:2 }}>= {starchPct.toFixed(2)}%</div>}
+                    </td>
+                    <td style={{ ...cell, textAlign:"right", color:"#e2e8f0", fontWeight:600 }}>{starchLine ? "₹" + starchLine.toLocaleString("en-IN") : "—"}</td>
+                  </tr>
+                  {/* Weight Deduction */}
+                  <tr style={{ borderBottom:"1px solid #1e2a3a" }}>
+                    <td style={cell}>Weight Deduction</td>
+                    <td style={cell}><input type="number" value={ccWeightDeduct} onChange={e => setCcWeightDeduct(e.target.value)} placeholder="kg" style={{ ...fld, width:120 }} /></td>
+                    <td style={{ ...cell, textAlign:"right", color:"#e2e8f0", fontWeight:600 }}>{weightLine ? "₹" + weightLine.toLocaleString("en-IN") : "—"}</td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"12px 14px", background:"#0f1117", borderRadius:8, marginBottom:16 }}>
+                <span style={{ fontSize:13, fontWeight:700, color:"#cbd5e1" }}>Total Claim</span>
+                <span style={{ fontSize:18, fontWeight:800, color:"#22c55e" }}>₹ {total.toLocaleString("en-IN")}</span>
+              </div>
+
+              <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+                <button onClick={() => setClaimCalcOpen(false)}
+                  style={{ background:"#1e2a3a", border:"1px solid #2a3a50", borderRadius:8, padding:"9px 18px", color:"#94a3b8", fontWeight:700, fontSize:13, cursor:"pointer" }}>Close</button>
+                <button onClick={() => {
+                    const snapshot = {
+                      recWt: ccRecWt, rate: ccRate, starchBase: ccStarchBase,
+                      fungus: ccFungus, aflatoxin: ccAflatoxin, moisture: ccMoisture,
+                      spoiled: ccSpoiled,  dust: ccDust, starch: ccStarch, weightDeduct: ccWeightDeduct,
+                      total
+                    };
+                    setForm(p => ({ ...p, qualityClaim: String(total), claimCalc: snapshot }));
+                    setClaimCalcOpen(false);
+                  }}
+                  style={{ background:"#22c55e", border:"none", borderRadius:8, padding:"9px 20px", color:"#fff", fontWeight:700, fontSize:13, cursor:"pointer" }}>Use Total → Claim</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+      
+      
       {toast && (
         <div style={{ position:"fixed", bottom:28, right:28, background:toast.type==="error"?"#ef4444":"#22c55e", color:"#fff", padding:"12px 18px", borderRadius:10, fontWeight:600, fontSize:13, zIndex:9999 }}>
           {toast.msg}
