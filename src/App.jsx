@@ -3928,6 +3928,7 @@ useEffect(() => {
   const [claimCalcOpen, setClaimCalcOpen] = useState(false);
   const [ccRecWt, setCcRecWt] = useState("");
   const [ccRate, setCcRate] = useState("");
+  const [ccRateSource, setCcRateSource] = useState("");
   const [ccStarchBase, setCcStarchBase] = useState("60");
   const [ccFungus, setCcFungus] = useState("");
   const [ccAflatoxin, setCcAflatoxin] = useState("");
@@ -4936,6 +4937,7 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
                           if (s && typeof s === "object") {
                             setCcRecWt(s.recWt ?? (form.receiveQty || ""));
                             setCcRate(s.rate ?? (form.rate || ""));
+                            setCcRateSource(s.rateSource ?? "");
                             setCcStarchBase(s.starchBase ?? "60");
                             setCcFungus(s.fungus ?? "");
                             setCcAflatoxin(s.aflatoxin ?? "");
@@ -4947,6 +4949,7 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
                           } else {
                             setCcRecWt(form.receiveQty || "");
                             setCcRate(form.rate || "");
+                            setCcRateSource(s.rateSource ?? "");
                             setCcFungus(""); setCcAflatoxin(""); setCcMoisture("");
                             setCcSpoiled(""); setCcStarch(""); setCcWeightDeduct(""); setCcStarchBase("60");
                           }
@@ -9418,11 +9421,23 @@ const handleUnignore = async (party) => {
             <div onClick={e => e.stopPropagation()} style={{ background:"#151b2a", border:"1px solid #2a3a50", borderRadius:14, padding:24, width:560, maxWidth:"92vw", maxHeight:"90vh", overflowY:"auto" }}>
               <div style={{ fontSize:15, fontWeight:800, color:"#38bdf8", marginBottom:16 }}>🧮 Quality Claim Calculator</div>
 
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:16 }}>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginBottom:16 }}>
                 <div><label style={{ fontSize:11, color:"#64748b" }}>Received Weight (Qt)</label>
                   <input type="number" value={ccRecWt} onChange={e => setCcRecWt(e.target.value)} style={fld} /></div>
+                <div><label style={{ fontSize:11, color:"#64748b" }}>Rate Source</label>
+                  <select value={ccRateSource} onChange={e => {
+                      const src = e.target.value;
+                      setCcRateSource(src);
+                      if (src === "bill") setCcRate(form.rate || "");
+                      else if (src === "sale") setCcRate("");
+                    }} style={fld}>
+                    <option value="">— Select —</option>
+                    <option value="bill">Party Bill Rate</option>
+                    <option value="sale">Sale Rate (Manual)</option>
+                  </select>
+                </div>
                 <div><label style={{ fontSize:11, color:"#64748b" }}>Rate (₹/Qt)</label>
-                  <input type="number" value={ccRate} onChange={e => setCcRate(e.target.value)} style={fld} /></div>
+                  <input type="number" value={ccRate} onChange={e => setCcRate(e.target.value)} placeholder={ccRateSource ? "" : "select source first"} style={fld} /></div>
               </div>
 
               <table style={{ width:"100%", borderCollapse:"collapse", marginBottom:16 }}>
@@ -9474,7 +9489,7 @@ const handleUnignore = async (party) => {
                   style={{ background:"#1e2a3a", border:"1px solid #2a3a50", borderRadius:8, padding:"9px 18px", color:"#94a3b8", fontWeight:700, fontSize:13, cursor:"pointer" }}>Close</button>
                 <button onClick={() => {
                     const snapshot = {
-                      recWt: ccRecWt, rate: ccRate, starchBase: ccStarchBase,
+                      recWt: ccRecWt, rate: ccRate, rateSource: ccRateSource, starchBase: ccStarchBase,
                       fungus: ccFungus, aflatoxin: ccAflatoxin, moisture: ccMoisture,
                       spoiled: ccSpoiled,  dust: ccDust, starch: ccStarch, weightDeduct: ccWeightDeduct,
                       total
