@@ -2911,8 +2911,10 @@ const tabLabels = {
   })();
 }, []);
 
-// Restore Supabase Auth session on load — keeps you logged in across refreshes
+// Restore Supabase Auth session on load — keeps you logged in across refreshes.
+// Waits for app_users to load so access is never granted before the profile is known.
 useEffect(() => {
+  if (users.length === 0) return;   // profiles not loaded yet — don't decide access
   (async () => {
     const { data: { session } } = await supabase.auth.getSession();
     if (session?.user) {
@@ -2921,13 +2923,8 @@ useEffect(() => {
       if (profile) {
         setCurrentUser(profile);
       } else {
-        setCurrentUser({
-          id: session.user.id,
-          username: email,
-          role: "Admin",
-          tabs: allTabs,
-          allowedFys: []
-        });
+        await supabase.auth.signOut();
+        setCurrentUser(null);
       }
     }
   })();
@@ -2949,19 +2946,14 @@ const handleLogin = async () => {
       return;
     }
 
-    const profile = users.find(u => u.username.toLowerCase() === email.toLowerCase());
+   const profile = users.find(u => u.username.toLowerCase() === email.toLowerCase());
 
-    if (profile) {
-      setCurrentUser(profile);
-    } else {
-      setCurrentUser({
-        id: data.user.id,
-        username: email,
-        role: "Admin",
-        tabs: allTabs,
-        allowedFys: []
-      });
+    if (!profile) {
+      await supabase.auth.signOut();
+      showToast("No profile found for this account — contact admin", "error");
+      return;
     }
+    setCurrentUser(profile);
 
     setLoginUsername("");
     setLoginPassword("");
