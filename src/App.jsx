@@ -4949,7 +4949,7 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
                           } else {
                             setCcRecWt(form.receiveQty || "");
                             setCcRate(form.rate || "");
-                            setCcRateSource(s.rateSource ?? "");
+                            setCcRateSource("");  // or: s?.rateSource ?? ""
                             setCcFungus(""); setCcAflatoxin(""); setCcMoisture("");
                             setCcSpoiled(""); setCcStarch(""); setCcWeightDeduct(""); setCcStarchBase("60");
                           }
@@ -9428,7 +9428,7 @@ const handleUnignore = async (party) => {
                   <select value={ccRateSource} onChange={e => {
                       const src = e.target.value;
                       setCcRateSource(src);
-                      if (src === "bill") setCcRate(form.rate || "");
+                      if (src === "bill") setCcRate(form?.rate || "");
                       else if (src === "sale") setCcRate("");
                     }} style={fld}>
                     <option value="">— Select —</option>
