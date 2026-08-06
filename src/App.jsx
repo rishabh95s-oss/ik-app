@@ -337,14 +337,15 @@ function calcTDS(form, allRecords) {
   const thisDate = new Date(billDate);
   const thisGross = Math.round((parseFloat(form.billQty) || 0) * (parseFloat(form.rate) || 0));
 
-  const seen = new Set();
-  let cumulative = 0;
+  const billAmounts = {}; // key: billNo, value: max gross
 
+  // 1. Build map from historical records (exclude only the ref being edited)
   const sorted = [...allRecords]
     .filter(r => {
       if (!r.partyName || !r.billDate) return false;
       if (r.partyName.trim() !== partyName) return false;
-      if (r.refNo?.trim() === editingRefNo) return false;
+      // FIX: Only skip if actually editing (editingRefNo exists)
+      if (editingRefNo && r.refNo?.trim() === editingRefNo) return false;
       const d = new Date(r.billDate);
       return d >= fyStart && d <= thisDate;
     })
@@ -355,17 +356,38 @@ function calcTDS(form, allRecords) {
     });
 
   for (const r of sorted) {
-    const key = `${r.partyName?.trim()}__${r.billNo?.trim()}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
     const rGross = Math.round((parseFloat(r.billQty) || 0) * (parseFloat(r.rate) || 0));
-    cumulative += rGross;
+    const key = r.billNo?.trim();
+    if (!billAmounts[key] || rGross > billAmounts[key]) {
+      billAmounts[key] = rGross;
+    }
   }
 
-  const AR = cumulative + thisGross;
+  // 2. Calculate cumulative BEFORE current bill
+  let oldCumulative = 0;
+  for (const gross of Object.values(billAmounts)) {
+    oldCumulative += gross;
+  }
+
+  // 3. FIX: Fold current bill into the SAME deduplication map
+  const currentKey = billNo;
+  if (!billAmounts[currentKey] || thisGross > billAmounts[currentKey]) {
+    billAmounts[currentKey] = thisGross;
+  }
+
+  // 4. Calculate cumulative AFTER current bill
+  let newCumulative = 0;
+  for (const gross of Object.values(billAmounts)) {
+    newCumulative += gross;
+  }
+
+  // 5. TDS logic on the TRUE aggregate
+  const AR = newCumulative;
   const TDS_THRESHOLD = 5000000;
   const BE = AR - TDS_THRESHOLD;
-  const AP = thisGross;
+
+  // FIX: Only the actual increase caused by this entry is taxable
+  const AP = newCumulative - oldCumulative;
 
   let tdsBase = 0;
   if (BE <= 0) {
@@ -2314,7 +2336,7 @@ const impact = useMemo(() => {
 }
 
 function ExternalSourcePurchaseTab({ records, setRecords, calcTDS, calcAll, purchaseFlashData, setPurchaseFlashData, showToast, parties, setParties, brokers, setBrokers, addBroker, salesWorkingData, setSalesWorkingData, claimRules, activeFY }) {
-  const [subTab, setSubTab] = useState("excel");
+  const [subTab, setSubTab] = useState("flash");  // Changed from "excel"
   const [status, setStatus] = useState("");
   const [renameMode, setRenameMode] = useState("purchase"); // "purchase" or "sales"
   const [renameSource, setRenameSource] = useState("");
@@ -2595,37 +2617,49 @@ if (newBrokers.length > 0) {
             const secHead = { fontSize:14, fontWeight:700, color:"#cbd5e1", marginBottom:12 };
 
             // ---- ACTION: Update Data from Flash (pull 9 fields, keep worked values, recompute) ----
-            const handleUpdate = async (flash, data) => {
-              const updated = {
-                ...data,
-                deliveryAt: flash.deliveryAt,
-                truckNo: flash.truckNo,
-                partyName: flash.partyName,
-                brokerName: flash.brokerName,
-                billDate: flash.billDate,
-                billNo: flash.billNo,
-                rate: flash.rate,
-                billQty: flash.billQty
-              };
-           const tds = updated.partyName ? calcTDS(updated, records) : 0;
-              const cdRule = claimRules.find(r => r.partyName === updated.deliveryAt)?.cdRule || "standard";
-              const c = calcAll(updated, tds, cdRule);
-              const record = { ...updated, _tds: tds, _cdRule: cdRule, _shortage: c.shortage, _halfKgQty: c.halfKgQty, _netQty: c.netQty, _netAmt1: c.netAmt1, _cdAmt: c.cdAmt, _netAmt: c.netAmt, _brokerageAmt: c.brokerageAmt, _finalAmt: c.finalAmt, _balance: c.balance };
-              const fyStartYear = parseInt(activeFY.split("-")[0], 10);
-              const fyMin = `${fyStartYear}-04-01`;
-              const fyMax = `${fyStartYear + 1}-03-31`;
-              if (record.billDate && (record.billDate < fyMin || record.billDate > fyMax)) {
-                showToast(`Cannot update: bill date ${record.billDate} is outside FY ${activeFY}`, "error");
-                return;
-              }
-              const ok = await upsertRecord(record, activeFY);
-              if (!ok) { showToast("Failed to update — check connection", "error"); return; }
-              const mergedUpd = records.map(r => r.refNo === data.refNo ? record : r);
-              const { ok: recOk, records: newRecs } = await recomputePartiesTDS([record.partyName], mergedUpd, claimRules, "changed", activeFY);
-              if (!recOk) showToast("Updated, but TDS refresh failed — check connection", "error");
-              setRecords(newRecs);
-              showToast(`Updated Ref No ${data.refNo} from Flash`);
-            };
+       const handleUpdate = async (flash, data) => {
+  const oldPartyName = data.partyName;
+  const newPartyName = flash.partyName;
+
+  // Find all records with the old party name
+  const affectedRecords = records.filter(r => r.partyName === oldPartyName);
+
+  // Show confirmation modal
+  const message = `Update ${affectedRecords.length} entry(ies) from "${oldPartyName}" to "${newPartyName}"?\n\nRef Nos: ${affectedRecords.map(r => r.refNo).join(", ")}`;
+  
+  if (!window.confirm(message)) return; // User cancelled
+
+  // Update all affected records
+  for (const record of affectedRecords) {
+    const updated = {
+      ...record,
+      partyName: newPartyName,
+    };
+
+    const tds = updated.partyName ? calcTDS(updated, records) : 0;
+    const cdRule = claimRules.find(r => r.partyName === updated.deliveryAt)?.cdRule || "standard";
+    const c = calcAll(updated, tds, cdRule);
+    const finalRecord = { ...updated, _tds: tds, _cdRule: cdRule, _shortage: c.shortage, _halfKgQty: c.halfKgQty, _netQty: c.netQty, _netAmt1: c.netAmt1, _cdAmt: c.cdAmt, _netAmt: c.netAmt, _brokerageAmt: c.brokerageAmt, _finalAmt: c.finalAmt, _balance: c.balance };
+
+    const fyStartYear = parseInt(activeFY.split("-")[0], 10);
+    const fyMin = `${fyStartYear}-04-01`;
+    const fyMax = `${fyStartYear + 1}-03-31`;
+    if (finalRecord.billDate && (finalRecord.billDate < fyMin || finalRecord.billDate > fyMax)) {
+      showToast(`Cannot update: bill date ${finalRecord.billDate} is outside FY ${activeFY}`, "error");
+      return;
+    }
+
+    const ok = await upsertRecord(finalRecord, activeFY);
+    if (!ok) { showToast("Failed to update — check connection", "error"); return; }
+  }
+
+  // Recompute TDS for the new party name
+  const mergedUpd = records.map(r => r.partyName === oldPartyName ? { ...r, partyName: newPartyName } : r);
+  const { ok: recOk, records: newRecs } = await recomputePartiesTDS([newPartyName], mergedUpd, claimRules, "changed", activeFY);
+  if (!recOk) showToast("Updated, but TDS refresh failed — check connection", "error");
+  setRecords(newRecs);
+  showToast(`Updated ${affectedRecords.length} entries: party "${oldPartyName}" → "${newPartyName}"`);
+};
 
             // ---- ACTION: Add Flash row into Data ----
             const handleAdd = async (flash) => {
@@ -2725,7 +2759,7 @@ if (newBrokers.length > 0) {
                               <td style={td}>{flash.billQty}</td><td style={td}>{data.billQty}</td>
                               <td style={td}>{flash.billNo}</td><td style={td}>{data.billNo}</td>
                               <td style={{ ...td, textAlign:"center" }}>
-                                <button onClick={() => handleUpdate(flash, data)} style={{ background:"#3b82f6", border:"none", borderRadius:4, padding:"4px 10px", color:"#fff", fontWeight:600, fontSize:9, cursor:"pointer" }}>🔄 Update</button>
+                               <span style={{ color:"#22c55e", fontSize:12, fontWeight:600 }}>✓</span>
                               </td>
                             </tr>
                           ))}
