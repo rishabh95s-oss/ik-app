@@ -877,12 +877,21 @@ const DataTableRow = React.memo(function DataTableRow({ rec, visibleKeys, fmt, f
           </td>
         ) : (
           <td key={k} style={{ padding:"6px 6px", color:"#cbd5e1", textAlign: k.includes("Qty") || k.includes("Rate") || k.includes("Amt") || k.includes("Balance") || k.includes("TDS") ? "right" : "left", whiteSpace:"nowrap" }}>
-            {k.includes("Amt") || k.includes("Balance") || k.includes("TDS") ? "₹" : ""}
-            {k.includes("Amt") || k.includes("Balance") || k.includes("TDS") 
-              ? (k === "_balance" ? (rec[k] !== undefined && rec[k] !== "" ? fmt(rec[k]) : "0") : fmt(rec[k])) 
-              : k.includes("Date") 
-              ? fmtDate(rec[k]) 
-              : (rec[k] || "")}
+            {(() => {
+              const val = rec[k];
+              // GUARD: Any object (including null) gets "✓" — prevents crash
+              if (val !== null && typeof val === "object") return "✓";
+              if (val === null) return "";
+              if (k.includes("Amt") || k.includes("Balance") || k.includes("TDS")) {
+                return (k === "_balance" 
+                  ? (val !== undefined && val !== "" ? fmt(val) : "0") 
+                  : (val !== undefined && val !== "" ? "₹" + fmt(val) : ""));
+              }
+              if (k.includes("Date")) {
+                return fmtDate(val);
+              }
+              return val || "";
+            })()}
           </td>
         )
       ))}
