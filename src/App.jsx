@@ -3615,28 +3615,55 @@ const replaceWorkingRow = useCallback((updated) => {
   }, []);
 
 
+const normalizeDate = (dateStr) => {
+  const monthMap = {
+    jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+    jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12'
+  };
+  const raw = String(dateStr || "").trim();
+  if (!raw) return "";
+  const parts = raw.split('-');
+  if (parts.length !== 3) return raw;
+  
+  let [p1, p2, p3] = parts.map(s => s.trim());
+  
+  // YYYY-MM-DD → DD-MM-YYYY
+  if (p1.length === 4 && !isNaN(p1)) {
+    return `${p3.padStart(2,'0')}-${p2.padStart(2,'0')}-${p1}`;
+  }
+  
+  // DD-MMM-YY or DD-MMM-YYYY
+  if (isNaN(p2)) {
+    const m = monthMap[p2.toLowerCase()] || p2.padStart(2,'0');
+    const y = p3.length === 2 ? "20" + p3 : p3;
+    return `${p1.padStart(2,'0')}-${m}-${y}`;
+  }
+  
+  // DD-MM-YY or DD-MM-YYYY
+  const y = p3.length === 2 ? "20" + p3 : p3;
+  return `${p1.padStart(2,'0')}-${p2.padStart(2,'0')}-${y}`;
+};
+
+const toComparable = (dateStr) => {
+  const parts = String(dateStr || "").split('-');
+  if (parts.length !== 3) return "00000000";
+  const [d, m, y] = parts;
+  return y + m + d;
+};
+
 const parseHDFCData = (pastedText) => {
   const lines = pastedText.trim().split('\n');
   const parsed = [];
-  
-  const convertDate = (dateStr) => {
-    // Convert DD-MM-YY to DD-MM-YY (keep as-is for consistency)
-    // Just clean up any extra spaces
-    return dateStr.trim();
-  };
-  
   lines.forEach((line, idx) => {
     if (idx === 0 && line.toLowerCase().includes('date')) return;
-    
     const cols = line.split('\t');
     if (cols.length < 7) return;
-    
     parsed.push({
       id: Math.random().toString(36).substr(2, 9),
-      date: convertDate(cols[0]),
+      date: normalizeDate(cols[0]),
       narration: cols[1],
       chqRef: cols[2],
-      valueDt: cols[3],
+      valueDt: normalizeDate(cols[3]),
       withdrawalAmt: parseFloat(cols[4]) || 0,
       depositAmt: parseFloat(cols[5]) || 0,
       closingBalance: parseFloat(cols[6]) || 0,
@@ -3644,60 +3671,49 @@ const parseHDFCData = (pastedText) => {
       partyName: ""
     });
   });
-  
   return parsed;
 };
 
 const parseSBIData = (pastedText) => {
   const lines = pastedText.trim().split('\n');
   const parsed = [];
-
   const money = (s) => parseFloat((s || "").replace(/,/g, '').trim()) || 0;
-
   lines.forEach((line, idx) => {
-    if (idx === 0 && line.toLowerCase().includes('txn date')) return; // skip header
-
+    if (idx === 0 && line.toLowerCase().includes('txn date')) return;
     const cols = line.split('\t');
     if (cols.length < 8) return;
-
     parsed.push({
       id: Math.random().toString(36).substr(2, 9),
-      date: cols[0].trim(),              // Txn Date
-      valueDt: cols[1].trim(),           // Value Date
-      narration: cols[2].trim(),         // Description
-      chqRef: cols[3].trim(),            // Ref No./Cheque No.
-      branchCode: cols[4].trim(),        // Branch Code
+      date: normalizeDate(cols[0]),
+      valueDt: normalizeDate(cols[1]),
+      narration: cols[2].trim(),
+      chqRef: cols[3].trim(),
+      branchCode: cols[4].trim(),
       mode: "",
-      withdrawalAmt: money(cols[5]),     // Debit
-      depositAmt: money(cols[6]),        // Credit
-      closingBalance: money(cols[7]),    // Balance
+      withdrawalAmt: money(cols[5]),
+      depositAmt: money(cols[6]),
+      closingBalance: money(cols[7]),
       linkedRefNo: "",
       partyName: ""
     });
   });
-
   return parsed;
 };
 
 const parseVASBData = (pastedText) => {
   const lines = pastedText.trim().split('\n');
   const parsed = [];
-
   lines.forEach((line, idx) => {
-    if (idx === 0 && line.toLowerCase().includes('date')) return; // skip header
-
+    if (idx === 0 && line.toLowerCase().includes('date')) return;
     const cols = line.split('\t');
     if (cols.length < 7) return;
-
-    // Dr/Cr indicator in column H (index 7). DR = negative, CR/blank = positive magnitude.
     const drcr = (cols[7] || "").trim().toUpperCase();
     let closing = parseFloat((cols[6] || "").replace(/,/g, '')) || 0;
     if (drcr === "DR" || drcr === "D") closing = -Math.abs(closing);
-    else closing = Math.abs(closing);   // CR or missing → positive magnitude; sign owned by arithmetic
-
+    else closing = Math.abs(closing);
     parsed.push({
       id: Math.random().toString(36).substr(2, 9),
-      date: cols[0].trim(),
+      date: normalizeDate(cols[0]),
       narration: cols[1].trim(),
       chqRef: cols[3].trim(),
       valueDt: "",
@@ -3710,7 +3726,6 @@ const parseVASBData = (pastedText) => {
       partyName: ""
     });
   });
-
   return parsed;
 };
 
@@ -3728,19 +3743,6 @@ const handlePasteBankData = async (bank) => {
     return;
   }
 
-  // Comparable key for date ordering (handles DD-MM-YY and DD-MM-YYYY)
-const toComparable = (dateStr) => {
-  const monthMap = {
-    jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
-    jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12'
-  };
-  const parts = String(dateStr || "").split('-');
-  if (parts.length !== 3) return "00000000";
-  let [d, m, y] = parts.map(s => s.trim().toLowerCase());
-  if (y.length === 2) y = "20" + y;
-  const monthNum = monthMap[m] || m.padStart(2, '0');
-  return y + monthNum + d.padStart(2, '0');
-};
   const money = (n) => "₹" + Number(n).toLocaleString("en-IN", { maximumFractionDigits: 2 });
 
   const existing = bankingData[bank] || [];
@@ -3748,13 +3750,12 @@ const toComparable = (dateStr) => {
   if (pasteDates.length === 0) { showToast("Could not read dates from paste", "error"); return; }
   const pasteMin = pasteDates.reduce((a, b) => a < b ? a : b);
 
-  let boundaryDate = null; // raw date string of the day to replace
+  let boundaryDate = null;
 
   if (existing.length > 0) {
     const storedDates = existing.map(t => toComparable(t.date)).filter(d => d !== "00000000");
     const storedMax = storedDates.reduce((a, b) => a > b ? a : b);
 
-    // 1. Reject wide overlaps outright
     if (pasteMin < storedMax) {
       showToast("Paste overlaps existing data. Start the paste on your last stored day.", "error");
       return;
@@ -3764,16 +3765,14 @@ const toComparable = (dateStr) => {
       boundaryDate = parsed.find(t => toComparable(t.date) === pasteMin)?.date;
     }
 
-    // 2. Balance continuity check — BEFORE any confirm or delete
     const sortedExisting = [...existing].sort((a, b) => {
       const da = toComparable(a.date), db = toComparable(b.date);
       if (da !== db) return da.localeCompare(db);
       return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
     });
 
-    // Anchor on the last stored row NOT on the boundary day (that day gets replaced)
     const anchorPool = boundaryDate
-      ? sortedExisting.filter(t => t.date !== boundaryDate)
+      ? sortedExisting.filter(t => toComparable(t.date) !== pasteMin)
       : sortedExisting;
 
     if (anchorPool.length > 0) {
@@ -3800,9 +3799,8 @@ const toComparable = (dateStr) => {
       }
     }
 
-    // 3. Boundary day confirmed and wiped only after validation passes
     if (boundaryDate) {
-      const dayRows = existing.filter(t => t.date === boundaryDate).length;
+      const dayRows = existing.filter(t => toComparable(t.date) === pasteMin).length;
       const linkedCount = await countLinkedOnDate(bank, boundaryDate);
       const msg = linkedCount > 0
         ? `Re-importing ${boundaryDate} will delete its ${dayRows} stored row(s), including ${linkedCount} LINKED transaction(s). Those links will be lost.\n\nContinue?`
@@ -3814,7 +3812,6 @@ const toComparable = (dateStr) => {
     }
   }
 
-  // Assign ascending createdAt so paste order becomes sort order
   const base = Date.now();
   const withBank = parsed.map((t, i) => ({ ...t, bank, createdAt: new Date(base + i).toISOString() }));
 
@@ -3823,16 +3820,22 @@ const toComparable = (dateStr) => {
 
   setBankingData(prev => {
     const kept = boundaryDate
-      ? (prev[bank] || []).filter(t => t.date !== boundaryDate)
+      ? (prev[bank] || []).filter(t => toComparable(t.date) !== pasteMin)
       : (prev[bank] || []);
-    return { ...prev, [bank]: [...kept, ...withBank] };
+
+    const combined = [...kept, ...withBank].sort((a, b) => {
+      const da = toComparable(a.date), db = toComparable(b.date);
+      if (da !== db) return da.localeCompare(db);
+      return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+    });
+
+    return { ...prev, [bank]: combined };
   });
 
   showToast(boundaryDate
     ? `${withBank.length} transactions imported (${boundaryDate} replaced)`
     : `${withBank.length} transactions imported`);
 };
-
 // Link bank transaction to Ref No
 
 const handleLinkBankTransaction = async (bankTransId, refNo, partyName) => {
