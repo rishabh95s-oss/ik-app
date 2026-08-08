@@ -1312,8 +1312,8 @@ const BankMainRow = React.memo(function BankMainRow({ item, bankTab, narrationWi
       <td style={tdBase}>{bankTab === "VASB" ? trans.mode : trans.valueDt}</td>
       <td style={{ ...tdBase, textAlign:"right" }}>₹{trans.withdrawalAmt ? trans.withdrawalAmt.toLocaleString() : "-"}</td>
       <td style={{ ...tdBase, textAlign:"right" }}>₹{trans.depositAmt ? trans.depositAmt.toLocaleString() : "-"}</td>
-      <td style={{ ...tdBase, textAlign:"right" }}>₹{trans.closingBalance.toLocaleString()}</td>
-      <td style={{ ...tdBase, textAlign:"right", color: isValid ? "#22c55e" : "#ef4444", fontWeight:700 }}>₹{calculatedCB.toLocaleString()}</td>
+      <td style={{ ...tdBase, textAlign:"right" }}>₹{trans.closingBalance ? trans.closingBalance.toLocaleString() : "-"}</td>
+<td style={{ ...tdBase, textAlign:"right", color: isValid ? "#22c55e" : "#ef4444", fontWeight:700 }}>₹{calculatedCB ? calculatedCB.toLocaleString() : "-"}</td>
       <td style={{ ...tdBase, textAlign:"center" }}>
         <span style={{ color: isValid ? "#22c55e" : "#ef4444", fontWeight:700 }}>{isValid ? "✓" : "✗"}</span>
       </td>
@@ -3729,13 +3729,18 @@ const handlePasteBankData = async (bank) => {
   }
 
   // Comparable key for date ordering (handles DD-MM-YY and DD-MM-YYYY)
-  const toComparable = (dateStr) => {
-    const parts = String(dateStr || "").split('-');
-    if (parts.length !== 3) return "00000000";
-    let [d, m, y] = parts;
-    if (y.length === 2) y = "20" + y;
-    return y + m.padStart(2, '0') + d.padStart(2, '0');
+const toComparable = (dateStr) => {
+  const monthMap = {
+    jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+    jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12'
   };
+  const parts = String(dateStr || "").split('-');
+  if (parts.length !== 3) return "00000000";
+  let [d, m, y] = parts.map(s => s.trim().toLowerCase());
+  if (y.length === 2) y = "20" + y;
+  const monthNum = monthMap[m] || m.padStart(2, '0');
+  return y + monthNum + d.padStart(2, '0');
+};
   const money = (n) => "₹" + Number(n).toLocaleString("en-IN", { maximumFractionDigits: 2 });
 
   const existing = bankingData[bank] || [];
