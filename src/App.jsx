@@ -1548,8 +1548,19 @@ function AutoComplete({ name, value, onChange, options, placeholder, style }) {
   );
 }
 
-function HisabReceipt({ rec, calcAll }) {
-  const c = calcAll(rec, rec._tds || 0);
+function HisabReceipt({ rec }) {
+  const c = {
+    partyBillAmt: Math.round((parseFloat(rec.billQty) || 0) * (parseFloat(rec.rate) || 0)),
+    shortage: parseFloat(rec._shortage) || 0,
+    halfKgQty: parseFloat(rec._halfKgQty) || 0,
+    gunnyDeduct: Math.round((parseFloat(rec.gunnyWeight) || 0) * 1000) / 1000,
+    netQty: parseFloat(rec._netQty) || 0,
+    netAmt1: parseFloat(rec._netAmt1) || 0,
+    cdAmt: parseFloat(rec._cdAmt) || 0,
+    brokerageAmt: parseFloat(rec._brokerageAmt) || 0,
+    finalAmt: parseFloat(rec._finalAmt) || 0,
+    balance: parseFloat(rec._balance) || 0,
+  };
   const h = (n) => n !== undefined && n !== null && !isNaN(n) ? Math.round(Number(n)).toString() : "0";
   const fmtDate = (d) => d ? d.split("-").reverse().join("-") : "";
   const rh = (pt) => ({ height: Math.round(pt * 0.74) + "px" });
@@ -1834,7 +1845,7 @@ function HisabPana({ records, calcAll, fmt }) {
 
   const currentIndex = hisabRec ? sortedRecords.findIndex(r => r.refNo === hisabRec.refNo) : -1;
 
-  const c = hisabRec ? calcAll(hisabRec, hisabRec._tds || 0) : null;
+
 
   const h = (n) => n !== undefined && n !== null && !isNaN(n) ? Math.round(Number(n)).toString() : "0";
  const fmtDate = (d) => d ? d.split("-").reverse().join("-") : "";
@@ -1875,7 +1886,7 @@ function HisabPana({ records, calcAll, fmt }) {
         {hisabRec && <span style={{ color:"#64748b", fontSize:12 }}>{currentIndex + 1} / {sortedRecords.length}</span>}
       </div>
 
-      {hisabRec && c && (
+      {hisabRec && (
         <div>
           {/* Linked refs banner — clickable to jump to each */}
           {linkedCluster.length > 1 && (
@@ -1900,7 +1911,7 @@ function HisabPana({ records, calcAll, fmt }) {
 
           {/* On-screen: the loaded receipt */}
           <div style={{ background:"#e0e0e0", padding:"30px", borderRadius:8 }}>
-            <HisabReceipt rec={hisabRec} calcAll={calcAll} />
+           <HisabReceipt rec={hisabRec} />
           </div>
 
           {/* Print-only: every cluster member, each its own page */}
