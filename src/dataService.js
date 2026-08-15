@@ -225,13 +225,19 @@ export async function loadSalesFlash(financialYear) {
   return data.map(flashRowToRecord);
 }
 
-// Replace the entire flash table with a new batch (matches paste-import behavior)
+
+
+// ---- SALES FLASH ----
 
 export async function replaceSalesFlash(records, financialYear) {
-  if (records.length === 0) return true;   // ← guard BEFORE delete (also fixes the wipe-on-empty issue)
+  if (records.length === 0) return true;
 
-  // Clear existing (only this year's, ideally — but for now clears all; year filtering comes in Stage 3)
-  const { error: delErr } = await supabase.from('sales_flash').delete().neq('ref_no', '___never___');
+  // ✅ Only delete rows belonging to the target financial year
+  const { error: delErr } = await supabase
+    .from('sales_flash')
+    .delete()
+    .eq('financial_year', financialYear);
+
   if (delErr) { console.error('replaceSalesFlash delete:', delErr.message); return false; }
 
   const rows = records.map(r => ({
@@ -239,13 +245,13 @@ export async function replaceSalesFlash(records, financialYear) {
     item_name: r.itemName, po_no: r.poNo, truck_no: r.truckNo,
     qty: parseFloat(r.qty) || 0, rate: parseFloat(r.rate) || 0,
     net_bill_amt: parseFloat(r.netBillAmt) || 0,
-    financial_year: financialYear   // ← stamp the year
+    financial_year: financialYear
   }));
 
   const { error: insErr } = await supabase.from('sales_flash').insert(rows);
   if (insErr) { console.error('replaceSalesFlash insert:', insErr.message); return false; }
   return true;
-}
+}  
 
 // ---- SALES WORKING ----
 
@@ -311,9 +317,34 @@ export async function upsertWorkingRow(record, financialYear) {
 // Save many working rows at once (used by Import from Flash / Auto-Populate)
 export async function upsertWorkingBatch(records, financialYear) {
   if (records.length === 0) return true;
-  const rows = records.map(r => ({ ...recordToWorkingRow(r), financial_year: financialYear }));
-  const { error } = await supabase.from('sales_working').upsert(rows, { onConflict: 'ref_no,financial_year' });
-  if (error) { console.error('upsertWorkingBatch:', error.message); return false; }
+
+  const CHUNK = 500;
+  let rows = records.map(r => ({
+    ...recordToWorkingRow(r),
+    financial_year: financialYear
+  }));
+
+  // 🔴 CRITICAL: dedupe by conflict key so Postgres doesn't hit the same row twice
+  const seen = new Map();
+  rows.forEach(row => {
+    const key = `${row.ref_no}|${row.financial_year}`;
+    seen.set(key, row); // last one wins
+  });
+  rows = Array.from(seen.values());
+
+  console.log(`upsertWorkingBatch: ${records.length} records → ${rows.length} unique rows`);
+
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const chunk = rows.slice(i, i + CHUNK);
+    const { error } = await supabase
+      .from('sales_working')
+      .upsert(chunk, { onConflict: 'ref_no,financial_year' });
+
+    if (error) {
+      console.error(`upsertWorkingBatch chunk ${i}:`, error.message);
+      return false;
+    }
+  }
   return true;
 }
 
@@ -561,9 +592,14 @@ export async function loadPurchaseFlash(financialYear) {
 // Replace the entire purchase_flash table with a new batch (paste-import behavior)
 
 export async function replacePurchaseFlash(records, financialYear) {
-  if (records.length === 0) return true;   // guard before delete
+  if (records.length === 0) return true;
 
-  const { error: delErr } = await supabase.from('purchase_flash').delete().neq('ref_no', '___never___');
+  // ✅ Only delete rows belonging to the target financial year
+  const { error: delErr } = await supabase
+    .from('purchase_flash')
+    .delete()
+    .eq('financial_year', financialYear);
+
   if (delErr) { console.error('replacePurchaseFlash delete:', delErr.message); return false; }
 
   const num = (v) => (v === "" || v === null || v === undefined ? null : parseFloat(v));
@@ -1136,15 +1172,29 @@ export async function importFullBackup(backup) {
  
   // conflict key per table
  
-  const CONFLICT = {
-    app_users: "id", bank_transactions: "id", banks: "name", brokers: "id",
-    claim_rules: "id", deliveries: "id", financial_years: "fy",
-    ignored_sales_parties: "party_name", loan_brokerage_accruals: "id",
-    loan_brokerage_payments: "id", loan_brokers: "id", loan_interest_events: "id",
-    loan_parties: "id", loans: "id", parties: "id",
-    pmt_linked_slots: "ref_no,financial_year", purchase_flash: "ref_no,financial_year",
-    purchases: "id", sales_flash: "id", sales_working: "id", users: "id",
-  };
+const CONFLICT = {
+  app_users: "id",
+  bank_transactions: "id",
+  banks: "name",
+  brokers: "id",
+  claim_rules: "id",
+  deliveries: "id",
+  financial_years: "fy",
+  ignored_sales_parties: "party_name",
+  loan_brokerage_accruals: "id",
+  loan_brokerage_payments: "id",
+  loan_brokers: "id",
+  loan_interest_events: "id",
+  loan_parties: "id",
+  loans: "id",
+  parties: "id",
+  pmt_linked_slots: "ref_no,financial_year",
+  purchase_flash: "ref_no,financial_year",
+  purchases: "ref_no,financial_year",
+  sales_flash: "ref_no,financial_year",     // ← safer: FY-scoped + refNo unique
+  sales_working: "ref_no,financial_year",   // ← matches upsertWorkingRow
+  users: "id",
+};
 
   // dependency order: parents/masters first, children last
   

@@ -318,11 +318,9 @@ function calcLoan({ principal, interestRate, brokerageRate, loanType, months, da
 }
 
 function getFYStart(dateStr) {
-  const d = new Date(dateStr);
-  const year = d.getFullYear();
-  const month = d.getMonth(); // 0=Jan, 3=Apr
-  const fyStartYear = month < 3 ? year - 1 : year; // Jan-Mar belong to previous year's FY
-  return new Date(fyStartYear, 3, 1);
+  const [y, m] = dateStr.split('-').map(Number);
+  const fyStartYear = m < 4 ? y - 1 : y;
+  return `${fyStartYear}-04-01`; // string, not Date
 }
 
 function calcTDS(form, allRecords) {
@@ -334,7 +332,6 @@ function calcTDS(form, allRecords) {
   if (!partyName || !billDate) return 0;
 
   const fyStart = getFYStart(billDate);
-  const thisDate = new Date(billDate);
   const thisGross = Math.round((parseFloat(form.billQty) || 0) * (parseFloat(form.rate) || 0));
 
   const billAmounts = {}; // key: billNo, value: max gross
@@ -344,10 +341,8 @@ function calcTDS(form, allRecords) {
     .filter(r => {
       if (!r.partyName || !r.billDate) return false;
       if (r.partyName.trim() !== partyName) return false;
-      // FIX: Only skip if actually editing (editingRefNo exists)
       if (editingRefNo && r.refNo?.trim() === editingRefNo) return false;
-      const d = new Date(r.billDate);
-      return d >= fyStart && d <= thisDate;
+      return r.billDate >= fyStart && r.billDate <= billDate;
     })
     .sort((a, b) => {
       const da = new Date(a.billDate), db = new Date(b.billDate);
@@ -742,8 +737,18 @@ const SalesWorkingCells = React.memo(function SalesWorkingCells({ rec, onUpdate,
       <td style={tdL}>{rec.partyName}</td>
       <td style={tdL}>{rec.broker}</td>
       <td style={tdL}>{rec.itemName}</td>
-      <td style={tdR}>{rec.qty}</td>
-      <td style={tdR}>₹{rec.rate}</td>
+      <td style={tdEdit}>
+  <input type="number" step="0.001" value={rec.qty}
+    onChange={(e) => onUpdate({ ...rec, qty: parseFloat(e.target.value) || 0 })}
+    onBlur={() => onSave({ ...rec, qty: rec.qty })}
+    style={editStyle} />
+</td>
+<td style={tdEdit}>
+  <input type="number" step="0.01" value={rec.rate}
+    onChange={(e) => onUpdate({ ...rec, rate: parseFloat(e.target.value) || 0 })}
+    onBlur={() => onSave({ ...rec, rate: rec.rate })}
+    style={editStyle} />
+</td>
 
       <td style={tdEdit}>
         <input type="number" value={rec.receivedWeight}
@@ -1510,7 +1515,7 @@ function AutoComplete({ name, value, onChange, options, placeholder, style }) {
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  });
+  }, []);   // ← added empty dependency array
 
   return (
     <div ref={ref} style={{ position:"relative" }}>
@@ -1530,12 +1535,12 @@ function AutoComplete({ name, value, onChange, options, placeholder, style }) {
       {open && filtered.length > 0 && (
         <div style={{ position:"absolute", top:"100%", left:0, right:0, background:"#1a2236", border:"1px solid #2a3a50", borderRadius:8, zIndex:1000, maxHeight:200, overflowY:"auto", boxShadow:"0 8px 24px rgba(0,0,0,.5)" }}>
           {filtered.map(o => (
-            <div key={o} onMouseDown={() => pick(o)}
-              style={{ padding:"9px 14px", cursor:"pointer", fontSize:13, color:"#cbd5e1", borderBottom:"1px solid #0f1117" }}
-              onMouseEnter={e => e.target.style.background="#2a3a50"}
-              onMouseLeave={e => e.target.style.background="transparent"}>
-              {o}
-            </div>
+           <div key={o} onMouseDown={(e) => { e.preventDefault(); pick(o); }}
+  style={{ padding:"9px 14px", cursor:"pointer", fontSize:13, color:"#cbd5e1", borderBottom:"1px solid #0f1117" }}
+  onMouseEnter={e => e.target.style.background="#2a3a50"}
+  onMouseLeave={e => e.target.style.background="transparent"}>
+  {o}
+</div>
           ))}
         </div>
       )}
@@ -1938,15 +1943,15 @@ const fyStartYear = parseInt((activeFY || "2026-27").split("-")[0], 10); // e.g.
     return mm ? { num: parseInt(mm[1], 10), suf: mm[2].toUpperCase() } : { num: Infinity, suf: s.toUpperCase() };
   };
 
-  const monthBills = useMemo(() => {
+   const monthBills = useMemo(() => {
     if (!selectedMonth) return [];
     const [y, m] = selectedMonth.split("-").map(Number);
     return records
       .filter(r => {
         const tds = parseFloat(r._tds) || 0;
         if (tds <= 0 || !r.billDate) return false;
-        const d = new Date(r.billDate);
-        return d.getFullYear() === y && (d.getMonth() + 1) === m;
+        const [by, bm] = r.billDate.split('-').map(Number);
+        return by === y && bm === m;
       })
       .sort((a, b) => {
         const pa = (a.partyName || "").trim().toLowerCase();
@@ -2238,7 +2243,7 @@ const impact = useMemo(() => {
       if (!parties.includes(tgt)) await addParty(tgt);
 
       // 3. Reload records fresh from DB so state matches
-      const fresh = await loadRecords();
+      const fresh = await loadRecords(activeFY);
 
       // 4. Recompute TDS for the target party's bills against the unified set
       const targetBills = fresh.filter(r => r.partyName === tgt);
@@ -2278,8 +2283,8 @@ const impact = useMemo(() => {
       if (!ok1 || !ok2 || !ok3) { setBusy(false); showToast("Partial failure — check connection and console", "error"); return; }
 
       // Reload affected data to sync state
-      const freshRecords = await loadRecords();
-      const freshWorking = await loadSalesWorking();
+      const freshRecords = await loadRecords(activeFY);
+      const freshWorking = await loadSalesWorking(activeFY);
       setRecords(freshRecords);
       setSalesWorkingData(freshWorking);
 
@@ -2344,15 +2349,85 @@ const impact = useMemo(() => {
   );
 }
 
+function getFinancialYear(dateStr) {
+  if (!dateStr) return null;
+  const [y, m] = dateStr.split("-").map(Number);
+  if (!y || !m) return null;
+  const startYear = m >= 4 ? y : y - 1;
+  return `${startYear}-${String((startYear + 1) % 100).padStart(2, '0')}`;
+}
+
+function detectFYMismatch(records, activeFY) {
+  const sample = records.slice(0, 20);
+  const detected = new Set();
+
+  for (const r of sample) {
+    // purchase flash uses billDate; sales flash uses date
+    const fy = getFinancialYear(r.date || r.billDate);
+    if (fy) detected.add(fy);
+  }
+
+  if (detected.size === 0) {
+    return { ok: false, reason: "Could not detect financial year from pasted dates." };
+  }
+
+  const allWrong = [...detected].every(fy => fy !== activeFY);
+  if (allWrong) {
+    return {
+      ok: false,
+      reason: `Pasted data appears to be FY ${[...detected].join(', ')}, but the app is set to ${activeFY}. Switch to the correct FY before importing.`
+    };
+  }
+
+  return { ok: true };
+}
+
 function ExternalSourcePurchaseTab({ records, setRecords, calcTDS, calcAll, purchaseFlashData, setPurchaseFlashData, showToast, parties, setParties, brokers, setBrokers, addBroker, salesWorkingData, setSalesWorkingData, claimRules, activeFY }) {
-  const [subTab, setSubTab] = useState("flash");  // Changed from "excel"
+  const [subTab, setSubTab] = useState("flash");
   const [status, setStatus] = useState("");
-  const [renameMode, setRenameMode] = useState("purchase"); // "purchase" or "sales"
+  const [renameMode, setRenameMode] = useState("purchase");
   const [renameSource, setRenameSource] = useState("");
   const [renameTarget, setRenameTarget] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
 
   const inp = { background:"#0f1117", border:"1px solid #1e2a3a", borderRadius:8, padding:"9px 12px", color:"#e2e8f0", fontSize:13, outline:"none", width:"100%" };
+
+  // ── FY GUARD ──
+  const handleFlashImport = async () => {
+    const pasted = prompt("Paste Flash purchase data (with header row):");
+    if (!pasted) return;
+
+    const parsed = parseFlashPurchase(pasted);
+    if (parsed.length === 0) {
+      setStatus("❌ Invalid format — check column order / tabs.");
+      return;
+    }
+
+    const check = detectFYMismatch(parsed, activeFY);
+    if (!check.ok) {
+      setStatus(check.reason);
+      showToast(check.reason, "error");
+      return;
+    }
+
+    setStatus(`⏳ Importing ${parsed.length} Flash rows...`);
+    const ok = await replacePurchaseFlash(parsed, activeFY);
+    if (!ok) { setStatus("❌ Failed to save Flash data — check connection."); return; }
+
+    setPurchaseFlashData(parsed);
+
+    const flashParties = [...new Set(parsed.map(r => r.partyName).filter(Boolean))];
+    const newParties = flashParties.filter(p => !parties.includes(p));
+    for (const p of newParties) await addParty(p);
+    if (newParties.length > 0) setParties(prev => [...new Set([...prev, ...newParties])].sort());
+
+    const flashBrokers = [...new Set(parsed.map(r => r.brokerName).filter(Boolean))];
+    const newBrokers = flashBrokers.filter(b => !brokers.includes(b));
+    for (const b of newBrokers) await addBroker(b);
+    if (newBrokers.length > 0) setBrokers(prev => [...new Set([...prev, ...newBrokers])].sort());
+
+    setStatus(`✅ Flash imported: ${parsed.length} rows. ${newParties.length} new parties, ${newBrokers.length} new brokers added to Manage.`);
+  };
 
   const parsePurchaseData = (pastedText) => {
     const lines = pastedText.trim().split('\n');
@@ -2519,45 +2594,9 @@ const c = calcAll(p, tds, cdRule);
     return out;
   };
 
-  const handleFlashImport = async () => {
-    const pasted = prompt("Paste Flash purchase data (with header row):");
-    if (!pasted) return;
-
-    const parsed = parseFlashPurchase(pasted);
-    if (parsed.length === 0) {
-      setStatus("❌ Invalid format — check column order / tabs.");
-      return;
-    }
-
-    setStatus(`⏳ Importing ${parsed.length} Flash rows...`);
-    const ok = await replacePurchaseFlash(parsed, activeFY);
-    if (!ok) { setStatus("❌ Failed to save Flash data — check connection."); return; }
-
-setPurchaseFlashData(parsed);
-
-   // Auto-absorb new purchase party names into Manage parties list
-    const flashParties = [...new Set(parsed.map(r => r.partyName).filter(Boolean))];
-    const newParties = flashParties.filter(p => !parties.includes(p));
-    for (const p of newParties) {
-      await addParty(p);
-    }
-    if (newParties.length > 0) {
-      setParties(prev => [...new Set([...prev, ...newParties])].sort());
-    }
-  
-    // Auto-absorb new broker names into Manage brokers list
-const flashBrokers = [...new Set(parsed.map(r => r.brokerName).filter(Boolean))];
-const newBrokers = flashBrokers.filter(b => !brokers.includes(b));
-for (const b of newBrokers) {
-  await addBroker(b);
-}
-if (newBrokers.length > 0) {
-  setBrokers(prev => [...new Set([...prev, ...newBrokers])].sort());
-}
 
 
-    setStatus(`✅ Flash imported: ${parsed.length} rows. ${newParties.length} new parties, ${newBrokers.length} new brokers added to Manage.`); 
-  };
+
 
   return (
     <div>
@@ -3219,10 +3258,11 @@ setRenewLoanId("");
       return;
     }
     
-   const newUser = {
+const newUser = {
   username,
   role: newUserRole,
   tabs: selectedTabs,
+  allowedFys: selectedFYs   // ✅ add this
 };
 
 const ok = await upsertAppUser(newUser);
@@ -3618,27 +3658,51 @@ const replaceWorkingRow = useCallback((updated) => {
 const normalizeDate = (dateStr) => {
   const monthMap = {
     jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
-    jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12'
+    jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
+    january: '01', february: '02', march: '03', april: '04', 
+    june: '06', july: '07', august: '08', 
+    september: '09', october: '10', november: '11', december: '12'
   };
-  const raw = String(dateStr || "").trim();
-  if (!raw) return "";
+
+  if (!dateStr) return "";
+  
+  // Excel serial number (e.g., 45892)
+  const serial = Number(dateStr);
+  if (!isNaN(serial) && serial > 30000 && serial < 100000) {
+    const excelEpoch = new Date(1899, 11, 30);
+    const d = new Date(excelEpoch.getTime() + serial * 86400000);
+    return `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}`;
+  }
+
+  // Strip time portion if present
+  let raw = String(dateStr).trim().split(' ')[0];
+
+  // Normalize separators: replace / and . with -
+  raw = raw.replace(/[\/\.]/g, '-');
+  
   const parts = raw.split('-');
   if (parts.length !== 3) return raw;
-  
+
   let [p1, p2, p3] = parts.map(s => s.trim());
-  
-  // YYYY-MM-DD → DD-MM-YYYY
+
+  // YYYY-MM-DD
   if (p1.length === 4 && !isNaN(p1)) {
     return `${p3.padStart(2,'0')}-${p2.padStart(2,'0')}-${p1}`;
   }
-  
-  // DD-MMM-YY or DD-MMM-YYYY
+
+  // MM-DD-YYYY (US format — only if p1 <= 12 and p2 <= 31)
+  if (!isNaN(p1) && !isNaN(p2) && p3.length === 4 && 
+      parseInt(p1) <= 12 && parseInt(p2) <= 31) {
+    return `${p2.padStart(2,'0')}-${p1.padStart(2,'0')}-${p3}`;
+  }
+
+  // DD-MMM-YY/YYYY or DD-MMMM-YY/YYYY
   if (isNaN(p2)) {
     const m = monthMap[p2.toLowerCase()] || p2.padStart(2,'0');
     const y = p3.length === 2 ? "20" + p3 : p3;
     return `${p1.padStart(2,'0')}-${m}-${y}`;
   }
-  
+
   // DD-MM-YY or DD-MM-YYYY
   const y = p3.length === 2 ? "20" + p3 : p3;
   return `${p1.padStart(2,'0')}-${p2.padStart(2,'0')}-${y}`;
@@ -5222,12 +5286,11 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
               </div>
               <div style={{ marginTop:12, padding:"10px 14px", background:"#0f1117", borderRadius:8, fontSize:12, color:"#64748b" }}>
                {form.partyName && form.billDate && (() => {
-                  const fyStartYear = parseInt(activeFY.split("-")[0], 10);
-                  const FY_START = new Date(fyStartYear, 3, 1); // April 1 of active FY
-                  const thisBillDate = new Date(form.billDate);
+                                   const fyStartYear = parseInt(activeFY.split("-")[0], 10);
+                  const FY_START = `${fyStartYear}-04-01`; // April 1 of active FY
 
                   // If this record is before FY — show not applicable
-                  if (thisBillDate < FY_START) {
+                  if (form.billDate < FY_START) {
                     return (
                       <div style={{ display:"flex", justifyContent:"space-between" }}>
                         <span>TDS applicable from</span>
@@ -5235,7 +5298,6 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
                       </div>
                     );
                   }
-
                   // Sort all party records by date+billNo
                   const partyRecs = records
                     .filter(r => r.partyName?.trim() === form.partyName?.trim() && r.billDate)
@@ -5246,7 +5308,7 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
                   let cumulative = 0;
                   let foundSelf = false;
                   for (const r of partyRecs) {
-                    if (new Date(r.billDate) < FY_START) continue;
+                    if (r.billDate < FY_START) continue;
                     const key = r.partyName?.trim() + "__" + r.billNo?.trim();
                     if (seen.has(key)) continue;
                     seen.add(key);
@@ -6841,6 +6903,13 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
                 return;
               }
               
+                  // 🛡️ FY GUARD
+              const check = detectFYMismatch(parsed, activeFY);
+              if (!check.ok) {
+                showToast(check.reason, "error");
+                return;
+              }
+              
               const ok = await replaceSalesFlash(parsed, activeFY);
               if (!ok) { showToast("Failed to save to database", "error"); return; }
               
@@ -6911,29 +6980,43 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
 {selectedSalesTab === "working" && (
   <div>
     <div style={{ display:"flex", gap:12, marginBottom:20, alignItems:"center", flexWrap:"wrap" }}>
- <button
-  onClick={async () => {  // ← ADD async HERE
-  if (salesFlashData.length === 0) {
-    showToast("No FLASH data! Paste data in 'As Per Flash' first", "error");
-    return;
-  }
-  
-  const workingRefNos = new Set(salesWorkingData.map(r => r.refNo));
-  const newRecords = salesFlashData.filter(r => !workingRefNos.has(r.refNo));
-  
-  if (newRecords.length === 0) {
-    showToast("No new entries to import. Check Reconcile tab for changes.", "info");
-    return;
-  }
-  
-  setSalesWorkingData([...salesWorkingData, ...newRecords]);
-  await upsertWorkingBatch([...salesWorkingData, ...newRecords], activeFY);  // ← ADD THIS LINE
-  showToast(`${newRecords.length} new entries imported.`);
-}}      style={{ background:"#22c55e", border:"none", borderRadius:8, padding:"10px 20px", color:"#fff", fontWeight:700, cursor:"pointer" }}
-      >
-        📥 Import from Flash
-      </button>
-      
+
+<button
+  onClick={async () => {
+    if (salesFlashData.length === 0) {
+      showToast("No FLASH data! Paste data in 'As Per Flash' first", "error");
+      return;
+    }
+
+    const workingRefNos = new Set(
+      salesWorkingData
+        .filter(r => r.financialYear === activeFY)
+        .map(r => r.refNo)
+    );
+
+    const newRecords = salesFlashData.filter(r => !workingRefNos.has(r.refNo));
+
+    if (newRecords.length === 0) {
+      showToast("No new entries to import.", "info");
+      return;
+    }
+
+    // Save ONLY the new ones (deduped inside upsertWorkingBatch)
+    const ok = await upsertWorkingBatch(newRecords, activeFY);
+    if (!ok) {
+      showToast("Database save failed. Check console.", "error");
+      return;
+    }
+
+    // Update UI state only after successful save
+    setSalesWorkingData(prev => [...prev, ...newRecords]);
+    showToast(`${newRecords.length} new entries imported and saved.`);
+  }}
+  style={{ background:"#22c55e", border:"none", borderRadius:8, padding:"10px 20px", color:"#fff", fontWeight:700, cursor:"pointer" }}
+>
+  📥 Import from Flash
+</button>      
+
 <button
  onClick={async () => {
   const claimRules = await loadClaimRules();
@@ -7721,9 +7804,9 @@ const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
       const summaryColumns = summaryType === "party" ? partyBaseColumns : summaryType === "broker" ? brokerBaseColumns : [];
       const isSummaryMode = summaryType !== "none";
      const columnsToUse = isSummaryMode ? summaryColumns : allKeys.filter(key => key !== "brokerageAmt" && (filtered.some(r => r[key] && String(r[key]).trim()) || alwaysShow.includes(key)));
-      const visibleKeys = isSummaryMode 
-        ? summaryColumns.filter(key => filtered.some(r => r[key] && String(r[key]).trim() && String(r[key]).trim() !== "0"))
-        : columnsToUse.filter(key => filtered.some(r => r[key] && String(r[key]).trim()));
+  const visibleKeys = isSummaryMode 
+    ? summaryColumns.filter(key => alwaysShow.includes(key) || filtered.some(r => r[key] && String(r[key]).trim() && String(r[key]).trim() !== "0"))
+    : columnsToUse.filter(key => alwaysShow.includes(key) || filtered.some(r => r[key] && String(r[key]).trim()));
      const columnOrder = ["_bankLinked","refNo", "deliveryAt", "truckNo", "partyName", "brokerName", "billDate", "billNo", "rate", "billQty", "receiveQty", "_shortage", "halfKgValue", "gunnyWeight", "_halfKgQty", "_netQty", "_netAmt1", "cdPct", "_cdAmt", "qualityClaim", "hammali", "freight", "mandiTax", "driverExpense", "others", "_netAmt", "brokerageRate","_brokerageAmt", "_tds", "_finalAmt", "bankAmt1", "bankDate1", "bankName1", "bankAmt2", "bankDate2", "bankName2", "bankAmt3", "bankDate3", "bankName3", "_balance", "note"];
       const sortedVisibleKeys = [...visibleKeys].sort((a, b) => {
         const aIdx = columnOrder.indexOf(a);
