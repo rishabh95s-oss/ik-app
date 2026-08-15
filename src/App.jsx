@@ -1515,7 +1515,7 @@ function AutoComplete({ name, value, onChange, options, placeholder, style }) {
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, []);   // ← added empty dependency array
+  });   // ← added empty dependency array
 
   return (
     <div ref={ref} style={{ position:"relative" }}>
