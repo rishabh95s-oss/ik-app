@@ -1535,7 +1535,7 @@ function AutoComplete({ name, value, onChange, options, placeholder, style }) {
       {open && filtered.length > 0 && (
         <div style={{ position:"absolute", top:"100%", left:0, right:0, background:"#1a2236", border:"1px solid #2a3a50", borderRadius:8, zIndex:1000, maxHeight:200, overflowY:"auto", boxShadow:"0 8px 24px rgba(0,0,0,.5)" }}>
           {filtered.map(o => (
-           <div key={o} onMouseDown={(e) => { e.preventDefault(); pick(o); }}
+  <div key={o} onMouseDown={() => pick(o)}
   style={{ padding:"9px 14px", cursor:"pointer", fontSize:13, color:"#cbd5e1", borderBottom:"1px solid #0f1117" }}
   onMouseEnter={e => e.target.style.background="#2a3a50"}
   onMouseLeave={e => e.target.style.background="transparent"}>
