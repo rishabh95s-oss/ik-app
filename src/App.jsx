@@ -3432,12 +3432,28 @@ const handleBillNext = () => {
     showToast("Select at least one bill", "error");
     return;
   }
-  
+
+  const totalPending = salesLinkingModal.selectedBills.reduce((sum, bId) => {
+    const bill = salesWorkingData.find(b => b.id === bId);
+    const c = calculateSalesFields(bill);
+    return sum + (c.pendingAmt || 0);
+  }, 0);
+
+  if (totalPending > salesLinkingModal.depositAmt) {
+    showToast(
+      `Total ₹${totalPending.toLocaleString()} exceeds deposit ₹${salesLinkingModal.depositAmt.toLocaleString()} — deselect some bills`,
+      "error"
+    );
+    return;
+  }
+
   const newAllocations = {};
   salesLinkingModal.selectedBills.forEach(billId => {
-    newAllocations[billId] = { slot: 1, amount: 0 };
+    const bill = salesWorkingData.find(b => b.id === billId);
+    const c = calculateSalesFields(bill);
+    newAllocations[billId] = { slot: 1, amount: c.pendingAmt || 0 };
   });
-  
+
   setSalesLinkingModal(prev => ({
     ...prev,
     step: 3,
@@ -6538,20 +6554,24 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
 
         // Auto-compute how much of the deposit each selected bill gets (pending amt until deposit runs out)
         let remaining = depositAmt;
-        const allotments = {}; // refNo -> amount allotted
-        filteredBills.forEach(bill => {
-          if (!selections[bill.id]?.checked) return;
-          const calc = calculateSalesFields(bill);
-          const alreadyPaid = (bill.bankPmt1 || 0) + (bill.bankPmt2 || 0) + (bill.bankPmt3 || 0);
-          const pending = calc.netAmt - alreadyPaid;
-          const toAllocate = Math.min(pending > 0 ? pending : 0, remaining);
-          allotments[bill.id] = toAllocate;
-          remaining -= toAllocate;
-        });
+      const allotments = {};
+filteredBills.forEach(bill => {
+  if (!selections[bill.id]?.checked) return;
+  const calc = calculateSalesFields(bill);
+  const alreadyPaid = (bill.bankPmt1 || 0) + (bill.bankPmt2 || 0) + (bill.bankPmt3 || 0);
+  const pending = calc.netAmt - alreadyPaid;
+  // Use custom amount if user edited it, otherwise auto-compute
+  const toAllocate = selections[bill.id]?.customAmount !== undefined
+    ? selections[bill.id].customAmount
+    : Math.min(pending > 0 ? pending : 0, remaining);
+  allotments[bill.id] = toAllocate;
+  remaining -= toAllocate;
+});
 
         const totalAllocated = depositAmt - remaining;
         const selectedCount = Object.values(selections).filter(s => s?.checked).length;
-
+        const overBy = totalAllocated > depositAmt ? totalAllocated - depositAmt : 0;
+           const shortBy = remaining > 0 ? remaining : 0;
         return (
           <div>
             <div style={{ fontSize:11, color:"#64748b", marginBottom:10 }}>
@@ -6602,9 +6622,27 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
                       <div style={{ fontSize:11, color:"#94a3b8", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{bill.partyName}</div>
                       <div style={{ fontSize:11, color:"#cbd5e1" }}>₹{calc.netAmt.toLocaleString()}</div>
                       <div style={{ fontSize:11, color: pending <= 0 ? "#22c55e" : "#f59e0b", fontWeight:600 }}>₹{pending.toLocaleString()}</div>
-                      <div style={{ fontSize:11, color: isChecked ? "#22c55e" : "#334155", fontWeight:700 }}>
-                        {isChecked ? `₹${allotted.toLocaleString()}` : "—"}
-                      </div>
+                     <div>
+  {isChecked ? (
+    <input
+      type="number"
+      value={selections[bill.id]?.customAmount ?? allotted}
+      onChange={e => setSalesLinkingModal(prev => ({
+        ...prev,
+        multiBillSelections: {
+          ...prev.multiBillSelections,
+          [bill.id]: {
+            ...(prev.multiBillSelections?.[bill.id] || {}),
+            customAmount: parseFloat(e.target.value) || 0
+          }
+        }
+      }))}
+      style={{ background:"#0f1117", border:"1px solid #1e2a3a", borderRadius:6, padding:"4px 6px", color:"#22c55e", fontSize:11, width:"100%", fontWeight:700 }}
+    />
+  ) : (
+    <span style={{ color:"#334155", fontSize:11 }}>—</span>
+  )}
+</div>
                       <div>
                         {isChecked && (
                           <select
@@ -6648,11 +6686,30 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
                 <span style={{ color:"#cbd5e1", fontWeight:600 }}>₹{depositAmt.toLocaleString()}</span>
               </div>
               <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, fontWeight:700 }}>
-                <span style={{ color:"#64748b" }}>Remaining:</span>
-                <span style={{ color: remaining === 0 ? "#22c55e" : remaining > 0 ? "#f59e0b" : "#ef4444" }}>
-                  {remaining === 0 ? "✓ FULLY ALLOCATED" : remaining > 0 ? `₹${remaining.toLocaleString()} UNALLOCATED` : `OVER by ₹${Math.abs(remaining).toLocaleString()}`}
-                </span>
-              </div>
+  <span style={{ color:"#64748b" }}>Deposit:</span>
+  <span style={{ color: remaining === 0 ? "#22c55e" : "#ef4444" }}>
+    {remaining === 0 ? "✓ FULLY ALLOCATED" : `OVER by ₹${Math.abs(remaining).toLocaleString()}`}
+  </span>
+</div>
+
+{(() => {
+  const totalBillsPending = Object.keys(salesLinkingModal.multiBillSelections || {})
+    .filter(id => salesLinkingModal.multiBillSelections[id]?.checked)
+    .reduce((sum, id) => {
+      const bill = salesWorkingData.find(b => b.id === id);
+      if (!bill) return sum;
+      const calc = calculateSalesFields(bill);
+      const alreadyPaid = (bill.bankPmt1 || 0) + (bill.bankPmt2 || 0) + (bill.bankPmt3 || 0);
+      return sum + Math.max(0, calc.netAmt - alreadyPaid);
+    }, 0);
+  const billsShortBy = totalBillsPending - totalAllocated;
+  return billsShortBy > 0 ? (
+    <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, fontWeight:700, marginTop:6 }}>
+      <span style={{ color:"#64748b" }}>Bills short by:</span>
+      <span style={{ color:"#f59e0b" }}>₹{billsShortBy.toLocaleString()} UNALLOCATED</span>
+    </div>
+  ) : null;
+})()}
             </div>
           </div>
         );
@@ -6735,7 +6792,9 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
                 const calc = calculateSalesFields(bill);
                 const alreadyPaid = (bill.bankPmt1 || 0) + (bill.bankPmt2 || 0) + (bill.bankPmt3 || 0);
                 const pending = calc.netAmt - alreadyPaid;
-                const toAllocate = Math.min(pending > 0 ? pending : 0, remaining);
+                const toAllocate = selections[id]?.customAmount !== undefined
+                ? selections[id].customAmount
+                : Math.min(pending > 0 ? pending : 0, remaining);
                 remaining -= toAllocate;
                 const slotNum = parseInt(selections[id].slot);
                 updatedBills.push({
@@ -6831,6 +6890,32 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
                   if (!ok) { showToast("Failed to unlink — check connection", "error"); return; }
 
                   setSalesWorkingData(prev => prev.map(b => b.id === m.billId ? cleared : b));
+
+// Remove from bank side
+const allBanks = ["HDFC", "SBI", "VASB"];
+for (const bank of allBanks) {
+  const bankTrans = bankingData[bank]?.find(t =>
+    t.linkedRefNo && t.linkedRefNo.split(", ").includes(m.billNo)
+  );
+  if (bankTrans) {
+    const newLinkedRefNo = bankTrans.linkedRefNo
+      .split(", ")
+      .filter(r => r !== m.billNo)
+      .join(", ");
+    const updatedBank = {
+      ...bankTrans,
+      linkedRefNo: newLinkedRefNo,
+      partyName: newLinkedRefNo === "" ? "" : bankTrans.partyName
+    };
+    await updateBankTransaction(updatedBank);
+    setBankingData(prev => ({
+      ...prev,
+      [bank]: prev[bank].map(t => t.id === bankTrans.id ? updatedBank : t)
+    }));
+    break;
+  }
+}
+
                   setUnlinkSlotModal(null);
                   showToast(`Unlinked all slots on Ref No ${m.billNo}`);
                 }}
