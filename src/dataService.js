@@ -364,22 +364,27 @@ function claimRuleRowToRecord(r) {
     partyName: r.party_name,
     claimRule: r.claim_rule,
     recWeightSource: r.rec_weight_source,
-    cdRule: r.cd_rule || "standard"
+    cdRule: r.cd_rule || "standard",
+    tdsRule: r.tds_rule || "manual",
+    tdsBase: r.tds_base || "gross"
   };
 }
+
 function recordToClaimRuleRow(r) {
   return {
     party_name: r.partyName,
     claim_rule: r.claimRule,
     rec_weight_source: r.recWeightSource,
-    cd_rule: r.cdRule || "standard"
+    cd_rule: r.cdRule || "standard",
+    tds_rule: r.tdsRule || "manual",
+     tds_base: r.tdsBase || "gross"
   };
 }
 
 export async function loadClaimRules() {
   const { data, error } = await supabase.from('claim_rules').select('*').order('party_name');
   if (error) { console.error('loadClaimRules:', error.message); return []; }
-  return data.map(claimRuleRowToRecord);
+   return data.map(claimRuleRowToRecord);
 }
 
 export async function upsertClaimRule(rule) {

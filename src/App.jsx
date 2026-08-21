@@ -9,6 +9,8 @@ function ClaimManagementTab({ claimRules: externalRules, setClaimRules: setExter
   const [newParty, setNewParty] = useState('');
   const [newClaimRule, setNewClaimRule] = useState('copy');
   const [newRecWeightSource, setNewRecWeightSource] = useState('data');
+  const [newTdsRule, setNewTdsRule] = useState('manual');  
+  const [newTdsBase, setNewTdsBase] = useState('gross');
   const [newCDRule, setNewCDRule] = useState("standard");
   const [salesParties, setSalesParties] = useState([]);
   const [saveStatus, setSaveStatus] = useState('idle'); // 'idle', 'saving', 'success', 'error'
@@ -83,6 +85,8 @@ const addClaim = async () => {
   claimRule: newClaimRule,
   recWeightSource: newRecWeightSource,
   cdRule: newCDRule,
+  tdsRule: newTdsRule,
+   tdsBase: newTdsBase || "gross"
 };
 
   const ok = await upsertClaimRule(newEntry);
@@ -100,6 +104,8 @@ setNewParty('');
 setNewClaimRule('copy');
 setNewRecWeightSource('data');
 setNewCDRule('standard');
+setNewTdsRule('manual');
+setNewTdsBase('gross');
 };
  const deleteClaim = async (id) => {
   const claim = claims.find(c => c.id === id);
@@ -218,12 +224,13 @@ const updateClaim = async (id, field, value) => {
         </button>
       </div>
 
-      {/* Party Rules List */}
-      <div style={{ background:"#151b2a", borderRadius:8, border:"1px solid #1e2a3a", overflow:"hidden" }}>
-     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr 150px", gap:4, padding:"16px", background:"#0f1117", fontWeight:600, fontSize:12, borderBottom:"1px solid #1e2a3a" }}>
+   {/* Party Rules List */}
+<div style={{ background:"#151b2a", borderRadius:8, border:"1px solid #1e2a3a", overflow:"hidden" }}>
+ <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr 1fr 150px", gap:4, padding:"16px", background:"#0f1117", fontWeight:600, fontSize:12, borderBottom:"1px solid #1e2a3a" }}>
   <div>Party Name</div>
   <div>Claim Rule</div>
   <div>CD Rule</div>
+  <div>TDS Rule</div>
   <div>Rec Weight Source</div>
   <div>Action</div>
 </div>
@@ -260,6 +267,31 @@ claims.map((claim) => (
       </select>
     </div>
 
+    {/* TDS Rule */}
+<div>
+  <select
+    value={claim.tdsRule || "manual"}
+    onChange={e => updateClaim(claim.id, 'tdsRule', e.target.value)}
+    style={{ ...inp, padding:"6px 8px", fontSize:11 }}
+  >
+    <option value="manual">Manual</option>
+    <option value="all-bills">All Bills</option>
+    <option value="threshold">Threshold</option>
+  </select>
+</div>
+    
+    <div>
+  <label style={lbl}>TDS On</label>
+  <select
+    value={claim.tdsBase || "gross"}
+    onChange={(e) => updateClaim(claim.id, 'tdsBase', e.target.value)}
+    style={inp}
+  >
+    <option value="gross">Gross Amt (Qty × Rate)</option>
+    <option value="net">Net Amt (After CD & Claim)</option>
+  </select>
+</div>
+    
     {/* Rec Weight Source */}
     <div>
       <select
@@ -707,6 +739,7 @@ const WORKING_COLS = [
   { label: "Bk Pmt 3", w: 70, align: "right" },
   { label: "Pending", w: 80, align: "right" },
   { label: "Days", w: 60, align: "right" },
+    { label: "Fix", align: "center" },
 ];
 const WORKING_TABLE_WIDTH = WORKING_COLS.reduce((s, c) => s + c.w, 0);
 
@@ -723,8 +756,24 @@ const WORKING_TABLE_COMPONENTS = {
   },
 };
 
-const SalesWorkingCells = React.memo(function SalesWorkingCells({ rec, onUpdate, onSave }) {
+  const calculateTdsFromRule = (rule, receivedWeight, rate, claim = 0, cd = 0, tdsBase = 'gross') => {
+  if (rule === "manual") return 0;
+  
+  let baseAmt = receivedWeight * rate;  // gross
+  if (tdsBase === "net") {
+    baseAmt = Math.max(0, baseAmt - claim - cd);  // after deductions
+  }
+  
+  if (rule === "all-bills") {
+    return Math.round((baseAmt * 0.1) / 100);
+  }
+  return 0;
+};
+  
+
+  const SalesWorkingCells = React.memo(function SalesWorkingCells({ rec, onUpdate, onSave, claimRules }) {
   const calculated = calculateSalesFields(rec);
+
   const editStyle = { width:"100%", padding:"2px 4px", background:"#1a2236", border:"1px solid #1e2a3a", borderRadius:3, color:"#cbd5e1", fontSize:10 };
   const tdEdit = { padding:"3px 3px", borderRight:"1px solid #1e2a3a" };
   const tdR = { padding:"6px 6px", color:"#cbd5e1", textAlign:"right", whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a", overflow:"hidden", textOverflow:"ellipsis" };
@@ -811,10 +860,31 @@ const SalesWorkingCells = React.memo(function SalesWorkingCells({ rec, onUpdate,
     style={editStyle} />
 </td>
       
- <td style={tdEdit}>
+<td style={tdEdit}>
   <input type="number" value={rec.tdsReceived}
     onChange={(e) => onUpdate({ ...rec, tdsReceived: parseFloat(e.target.value) || 0 })}
-    onBlur={() => onSave({ ...rec, tdsReceived: rec.tdsReceived })}
+  onBlur={() => {
+  console.log('TDS BLUR - party:', rec.partyName, 'tdsReceived:', rec.tdsReceived);
+  
+  if (!rec.tdsReceived || rec.tdsReceived === 0) {
+    const matchedRule = claimRules?.find(r => r.partyName === rec.partyName);
+    const rule = matchedRule?.tdsRule || "manual";
+    const tdsBase = matchedRule?.tdsBase || "gross";
+    
+    // Get claim and cd from the record (adjust field names if different)
+    const claim = rec.claim || 0;
+    const cd = rec.cd || 0;
+    
+    console.log('RULE:', rule, 'TDS BASE:', tdsBase, 'CLAIM:', claim, 'CD:', cd);
+    
+    const autoTds = calculateTdsFromRule(rule, rec.receivedWeight, rec.rate, claim, cd, tdsBase);
+    console.log('CALCULATED TDS:', autoTds);
+    
+    onSave({ ...rec, tdsReceived: autoTds });
+  } else {
+    onSave(rec);
+  }
+}}
     style={editStyle} />
 </td>
 
@@ -868,6 +938,41 @@ const SalesWorkingCells = React.memo(function SalesWorkingCells({ rec, onUpdate,
 </td>
       <td style={tdR}>₹{calculated.pendingAmt}</td>
       <td style={{ padding:"6px 6px", color:"#cbd5e1", textAlign:"right", whiteSpace:"nowrap" }}>{calculated.days}</td>
+          
+<td style={{ padding:"3px 6px", textAlign:"center", whiteSpace:"nowrap" }}>
+  {(() => {
+    const pending = parseFloat(calculated.pendingAmt) || 0;
+    
+    // Guard: only show if at least one bank payment exists
+    const hasAnyPayment = (parseFloat(rec.bankPmt1) || 0) > 0
+                       || (parseFloat(rec.bankPmt2) || 0) > 0
+                       || (parseFloat(rec.bankPmt3) || 0) > 0;
+
+    if (Math.abs(pending) < 0.01 || !hasAnyPayment) return null;
+
+    return (
+      <button
+        onClick={() => {
+          const adjustedClaim = (parseFloat(rec.claim) || 0) + pending;
+          onSave({ ...rec, claim: parseFloat(adjustedClaim.toFixed(2)) });
+        }}
+        title={`Pending mismatch: ₹${pending.toFixed(2)}. Click to absorb into claim.`}
+        style={{
+          background: pending > 0 ? "#f59e0b" : "#10b981",
+          border: "none",
+          borderRadius: 4,
+          padding: "4px 8px",
+          color: "#fff",
+          fontSize: 11,
+          fontWeight: 700,
+          cursor: "pointer"
+        }}
+      >
+        {pending > 0 ? `Adj +₹${pending.toFixed(2)}` : `Adj -₹${Math.abs(pending).toFixed(2)}`}
+      </button>
+    );
+  })()}
+</td>   
     </>
   );
 });
@@ -3673,6 +3778,9 @@ const parseFlashData = (pastedText) => {
 
 const saveWorkingRow = useCallback(async (row) => {
     if (!row) return;
+    // Update local state immediately
+    setSalesWorkingData(prev => prev.map(r => r.id === row.id ? row : r));
+    // Then save to DB
     const ok = await upsertWorkingRow(row, activeFY);
     if (!ok) showToast("Failed to save row — check connection", "error");
   }, [activeFY]);
@@ -7125,6 +7233,7 @@ for (const bank of allBanks) {
   const hasClaim  = (r) => (parseFloat(r.claim) || 0) > 0;
   const hasRecWt  = (r) => (parseFloat(r.receivedWeight) || 0) > 0;
   const hasGunny  = (r) => (parseFloat(r.gunnyWeight) || 0) > 0;
+  const hasTds    = (r) => (parseFloat(r.tdsReceived) || 0) > 0;
   setSalesWorkingData(prev => {
     const newData = prev.map(salesRec => {
       const rule = ruleMap.get(salesRec.partyName);
@@ -7187,11 +7296,31 @@ for (const bank of allBanks) {
         }
       }
 
+    // AUTO-CALCULATE TDS if empty (guarded - don't overwrite existing)
+   let newTds = 0;
+    if (!hasTds(salesRec)) {
+  const matchedRule = rule;
+  const tdsRule = matchedRule?.tdsRule || "manual";
+  const tdsBase = matchedRule?.tdsBase || "gross";
+  
+  const recWt = hasRecWt(salesRec) ? salesRec.receivedWeight : newRecWeight;
+  const rate = parseFloat(salesRec.rate) || 0;
+  const claim = parseFloat(salesRec.claim) || 0;   // ← from DB column "claim"
+  const cd = parseFloat(salesRec.cd) || 0;         // ← from DB column "cd"
+  
+  console.log('Auto-calc inputs:', { tdsRule, tdsBase, recWt, rate, claim, cd });
+  
+  newTds = calculateTdsFromRule(tdsRule, recWt, rate, claim, cd, tdsBase);
+  console.log('Auto-calc result:', newTds);
+
+}
+      
       const updatedRec = {
         ...salesRec,
         receivedWeight: hasRecWt(salesRec) ? salesRec.receivedWeight : newRecWeight,
         claim: hasClaim(salesRec) ? salesRec.claim : newClaim,
-gunnyWeight: hasGunny(salesRec) ? salesRec.gunnyWeight : (parseFloat(dataRec.gunnyWeight) || 0),
+        gunnyWeight: hasGunny(salesRec) ? salesRec.gunnyWeight : (parseFloat(dataRec.gunnyWeight) || 0),
+        tdsReceived: hasTds(salesRec) ? salesRec.tdsReceived : newTds,
         cdRule
       };
       updatedRecords.push(updatedRec);
@@ -7274,7 +7403,11 @@ const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
           </tr>
         )}
         itemContent={(index, rec) => (
-          <SalesWorkingCells rec={rec} onUpdate={replaceWorkingRow} onSave={saveWorkingRow} />
+          <SalesWorkingCells 
+          rec={rec} 
+          onUpdate={replaceWorkingRow} 
+          onSave={saveWorkingRow} 
+          claimRules={claimRules}/>
         )}
       />
     );
