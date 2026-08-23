@@ -451,6 +451,13 @@ function downloadCSV(filename, headers, rows) {
   URL.revokeObjectURL(url);
 }
 
+const fmtDisplayDate = (d) => {
+  if (!d) return "";
+  const p = String(d).split('-');
+  if (p.length === 3 && p[0].length === 4) return `${p[2]}-${p[1]}-${p[0]}`;
+  return d;
+};
+
 function calcAll(f, autoTDS = 0, cdRule = "standard") {
   const H = parseFloat(f.rate) || 0;
   const I = parseFloat(f.billQty) || 0;
@@ -782,7 +789,7 @@ const WORKING_TABLE_COMPONENTS = {
   return (
     <>
       <td style={tdL}>{rec.refNo}</td>
-      <td style={tdL}>{rec.date}</td>
+      <td style={tdL}>{fmtDisplayDate(rec.date)}</td>
       <td style={tdL}>{rec.partyName}</td>
       <td style={tdL}>{rec.broker}</td>
       <td style={tdL}>{rec.itemName}</td>
@@ -1065,7 +1072,7 @@ const FlashTableRow = React.memo(function FlashTableRow({ rec }) {
   return (
     <>
       <td style={tdL}>{rec.refNo}</td>
-      <td style={tdL}>{rec.date}</td>
+      <td style={tdL}>{fmtDisplayDate(rec.date)}</td>
       <td style={tdL}>{rec.partyName}</td>
       <td style={tdL}>{rec.broker}</td>
       <td style={tdL}>{rec.itemName}</td>
@@ -1084,7 +1091,7 @@ const ReconcileAddRow = React.memo(function ReconcileAddRow({ rec, onAdd }) {
   return (
     <>
       <td style={tdL}>{rec.refNo}</td>
-      <td style={tdL}>{rec.date}</td>
+      <td style={tdL}>{fmtDisplayDate(rec.date)}</td>
       <td style={tdL}>{rec.partyName}</td>
       <td style={tdR}>{rec.qty}</td>
       <td style={tdR}>₹{rec.rate}</td>
@@ -1106,7 +1113,7 @@ const ReconcileRemoveRow = React.memo(function ReconcileRemoveRow({ rec, onRemov
   return (
     <>
       <td style={tdL}>{rec.refNo}</td>
-      <td style={tdL}>{rec.date}</td>
+      <td style={tdL}>{fmtDisplayDate(rec.date)}</td>
       <td style={tdL}>{rec.partyName}</td>
       <td style={tdR}>{rec.qty}</td>
       <td style={tdR}>₹{rec.rate}</td>
@@ -1490,7 +1497,7 @@ const tdR = { padding:"6px 6px", color:"#cbd5e1", textAlign:"right", whiteSpace:
   return (
     <>
       <td style={tdL}>{rec.refNo}</td>
-      <td style={tdL}>{rec.date}</td>
+      <td style={tdL}>{fmtDisplayDate(rec.date)}</td>
       <td style={tdL}>{rec.partyName}</td>
      <td style={tdR}>₹{calculated.netAmt.toLocaleString("en-IN", { maximumFractionDigits: 2 })}</td>
       <td style={tdL}>{fmtD(rec.bankDate1)}</td>
@@ -2530,6 +2537,7 @@ function ExternalSourcePurchaseTab({ records, setRecords, calcTDS, calcAll, purc
     }
 
     setStatus(`⏳ Importing ${parsed.length} Flash rows...`);
+    
     const ok = await replacePurchaseFlash(parsed, activeFY);
     if (!ok) { setStatus("❌ Failed to save Flash data — check connection."); return; }
 
@@ -3826,10 +3834,11 @@ const parseFlashData = (pastedText) => {
 
 const saveWorkingRow = useCallback(async (row) => {
     if (!row) return;
-    // Update local state immediately
+    // Update local state immediately (keep _fy for UI)
     setSalesWorkingData(prev => prev.map(r => r.id === row.id ? row : r));
-    // Then save to DB
-    const ok = await upsertWorkingRow(row, activeFY);
+    // Strip internal _fy tag before DB write
+    const { _fy, ...cleanRow } = row;
+    const ok = await upsertWorkingRow(cleanRow, activeFY);
     if (!ok) showToast("Failed to save row — check connection", "error");
   }, [activeFY]);
 
@@ -7473,35 +7482,34 @@ for (const bank of allBanks) {
       return;
     }
 
-    const workingRefNos = new Set(
-      salesWorkingData
-        .filter(r => r.financialYear === activeFY)
-        .map(r => r.refNo)
+    // salesWorkingData is already scoped to active FY by loadSalesWorking
+    const workingRefSet = new Set(
+      salesWorkingData.map(r => String(r.refNo || "").trim())
     );
 
-    const newRecords = salesFlashData.filter(r => !workingRefNos.has(r.refNo));
+    const newRecords = salesFlashData.filter(r => {
+      const ref = String(r.refNo || "").trim();
+      return !workingRefSet.has(ref);
+    });
 
     if (newRecords.length === 0) {
-      showToast("No new entries to import.", "info");
+      showToast("All flash entries already exist in working.", "info");
       return;
     }
 
-    // Save ONLY the new ones (deduped inside upsertWorkingBatch)
     const ok = await upsertWorkingBatch(newRecords, activeFY);
     if (!ok) {
       showToast("Database save failed. Check console.", "error");
       return;
     }
 
-    // Update UI state only after successful save
     setSalesWorkingData(prev => [...prev, ...newRecords]);
-    showToast(`${newRecords.length} new entries imported and saved.`);
+    showToast(`${newRecords.length} new entries imported into working.`);
   }}
   style={{ background:"#22c55e", border:"none", borderRadius:8, padding:"10px 20px", color:"#fff", fontWeight:700, cursor:"pointer" }}
 >
   📥 Import from Flash
-</button>      
-
+</button>
 <button
  onClick={async () => {
   const claimRules = await loadClaimRules();
