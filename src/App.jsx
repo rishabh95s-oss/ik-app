@@ -1384,8 +1384,12 @@ const tdR = { padding:"6px 6px", color:"#cbd5e1", textAlign:"right", whiteSpace:
   );
 });
 
-function makeBankMainComponents(narrationWidth) {
-  const cols = BANK_MAIN_COLS.map(c => c.key === "narration" ? { ...c, w: narrationWidth } : c);
+function makeBankMainComponents(narrationWidth, chqRefWidth, refNoWidth) {
+  const cols = BANK_MAIN_COLS.map(c => 
+    c.key === "narration" ? { ...c, w: narrationWidth } : 
+    c.key === "chqRef" ? { ...c, w: chqRefWidth } : 
+    c.key === "refNo" ? { ...c, w: refNoWidth } : c
+  );
   const width = cols.reduce((s, c) => s + c.w, 0);
   return {
     Table: ({ children, style, ...rest }) => (
@@ -1400,7 +1404,6 @@ function makeBankMainComponents(narrationWidth) {
     },
   };
 }
-
 const BankMainRow = React.memo(function BankMainRow({ item, bankTab, narrationWidth, onLink, onUnlink }) {
   if (item.type === "separator") {
     return (
@@ -3488,6 +3491,8 @@ const handleEditToggleTab = (tab) => {
 const [bankingData, setBankingData] = useState({ HDFC: [], SBI: [], VASB: [] });
 
 const [narrationWidth, setNarrationWidth] = useState(200);
+const [chqRefWidth, setChqRefWidth] = useState(100);
+const [refNoWidth, setRefNoWidth] = useState(80);
 const [selectedBankTab, setSelectedBankTab] = useState("HDFC");
 const [partyFilterBank, setPartyFilterBank] = useState("");
 const [linkedTransactions, setLinkedTransactions] = useState({});
@@ -5966,35 +5971,92 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
             style={{ height:"100%" }}
             data={items}
             computeItemKey={(_, item) => item.key}
-            components={makeBankMainComponents(narrationWidth)}
+            components={makeBankMainComponents(narrationWidth, chqRefWidth, refNoWidth)}
             fixedHeaderContent={() => (
               <tr style={{ background:"#151b2a" }}>
-                {cols.map((c, i) => (
-                  <th key={i} style={{ padding:"8px 6px", textAlign:c.align, color:"#64748b", fontWeight:700, whiteSpace:"nowrap", background:"#151b2a", borderRight: i < cols.length - 1 ? "1px solid #1e2a3a" : "none", position: c.key === "narration" ? "relative" : undefined, userSelect: c.key === "narration" ? "none" : undefined }}>
-                    {c.key === "valueDt" ? (selectedBankTab === "VASB" ? "Mode" : "Value Dt") : c.label}
-                    {c.key === "narration" && (
-                      <div
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          const startX = e.clientX;
-                          const startWidth = narrationWidth;
-                          const onMove = (ev) => setNarrationWidth(Math.max(150, startWidth + (ev.clientX - startX)));
-                          const onUp = () => {
-                            document.removeEventListener("mousemove", onMove);
-                            document.removeEventListener("mouseup", onUp);
-                          };
-                          document.addEventListener("mousemove", onMove);
-                          document.addEventListener("mouseup", onUp);
-                        }}
-                        style={{ position:"absolute", right:0, top:0, width:"5px", height:"100%", cursor:"col-resize", background:"#f59e0b", opacity:0, transition:"opacity .2s" }}
-                        onMouseEnter={(e) => e.currentTarget.style.opacity = "0.8"}
-                        onMouseLeave={(e) => e.currentTarget.style.opacity = "0"}
-                      />
-                    )}
-                  </th>
-                ))}
-              </tr>
+                    {cols.map((c, i) => (
+      <th key={i} style={{ 
+        padding:"8px 6px", 
+        textAlign:c.align, 
+        color:"#64748b", 
+        fontWeight:700, 
+        whiteSpace:"nowrap", 
+        background:"#151b2a", 
+        borderRight: i < cols.length - 1 ? "1px solid #1e2a3a" : "none", 
+            position: (c.key === "narration" || c.key === "chqRef" || c.key === "refNo") ? "relative" : undefined, 
+    userSelect: (c.key === "narration" || c.key === "chqRef" || c.key === "refNo") ? "none" : undefined 
+      }}>
+        {c.key === "valueDt" ? (selectedBankTab === "VASB" ? "Mode" : "Value Dt") : c.label}
+        
+        {/* Narration resize handle */}
+        {c.key === "narration" && (
+          <div
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const startX = e.clientX;
+              const startWidth = narrationWidth;
+              const onMove = (ev) => setNarrationWidth(Math.max(150, startWidth + (ev.clientX - startX)));
+              const onUp = () => {
+                document.removeEventListener("mousemove", onMove);
+                document.removeEventListener("mouseup", onUp);
+              };
+              document.addEventListener("mousemove", onMove);
+              document.addEventListener("mouseup", onUp);
+            }}
+            style={{ position:"absolute", right:0, top:0, width:"5px", height:"100%", cursor:"col-resize", background:"#f59e0b", opacity:0, transition:"opacity .2s" }}
+            onMouseEnter={(e) => e.currentTarget.style.opacity = "0.8"}
+            onMouseLeave={(e) => e.currentTarget.style.opacity = "0"}
+          />
+        )}
+
+        {/* Chq/Ref resize handle */}
+        {c.key === "chqRef" && (
+          <div
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const startX = e.clientX;
+              const startWidth = chqRefWidth;
+              const onMove = (ev) => setChqRefWidth(Math.max(60, startWidth + (ev.clientX - startX)));
+              const onUp = () => {
+                document.removeEventListener("mousemove", onMove);
+                document.removeEventListener("mouseup", onUp);
+              };
+              document.addEventListener("mousemove", onMove);
+              document.addEventListener("mouseup", onUp);
+            }}
+            style={{ position:"absolute", right:0, top:0, width:"5px", height:"100%", cursor:"col-resize", background:"#f59e0b", opacity:0, transition:"opacity .2s" }}
+            onMouseEnter={(e) => e.currentTarget.style.opacity = "0.8"}
+            onMouseLeave={(e) => e.currentTarget.style.opacity = "0"}
+          />
+        )}
+      {/* REF NO resize handle */}
+{c.key === "refNo" && (
+  <div
+    onMouseDown={(e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startWidth = refNoWidth;
+      const onMove = (ev) => setRefNoWidth(Math.max(60, startWidth + (ev.clientX - startX)));
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    }}
+    style={{ position:"absolute", right:0, top:0, width:"5px", height:"100%", cursor:"col-resize", background:"#f59e0b", opacity:0, transition:"opacity .2s" }}
+    onMouseEnter={(e) => e.currentTarget.style.opacity = "0.8"}
+    onMouseLeave={(e) => e.currentTarget.style.opacity = "0"}
+  />
+)}
+      
+      
+      </th>
+    ))}              
+    </tr>
             )}
             itemContent={(_, item) => (
               <BankMainRow item={item} bankTab={selectedBankTab} narrationWidth={narrationWidth} onLink={handleLinkRow} onUnlink={handleUnlinkRow} />
@@ -6968,7 +7030,14 @@ const activeFyIndex = flatBills.findIndex(i => i.kind === "header" && i.fy === a
 const bill = allFYSalesWorking.find(b => b.id === id && (b._fy || activeFY) === fy) 
   || salesWorkingData.find(b => b.id === id && (b._fy || activeFY) === fy);
 if (!bill) { console.warn("⚠️ Bill not found for id:", id, "fy:", fy); continue; }
-          const calc = calcCache[bill.id] || calculateSalesFields(bill);
+  // HARD GUARD: never save a bill to a different FY table than its origin
+  const billFy = bill._fy || activeFY;
+  if (billFy !== fy) {
+    console.error("🚨 FY mismatch — skipping corrupt save", { id, billFy, targetFy: fy });
+    continue;
+  }         
+
+const calc = calcCache[bill.id] || calculateSalesFields(bill);
           const alreadyPaid = (bill.bankPmt1 || 0) + (bill.bankPmt2 || 0) + (bill.bankPmt3 || 0);
           const pending = calc.netAmt - alreadyPaid;
           const toAllocate = selections[id]?.customAmount !== undefined
@@ -6994,9 +7063,21 @@ if (!bill) { console.warn("⚠️ Bill not found for id:", id, "fy:", fy); conti
         });
         console.log("🗂️ byFY groups:", Object.keys(byFY).map(k => `${k}: ${byFY[k].length} bills`));
 
-        // Strip _fy before saving to avoid DB column mismatch
+                // Strip _fy before saving to avoid DB column mismatch
         for (const [fy, rows] of Object.entries(byFY)) {
           const cleanRows = rows.map(({ _fy, ...rest }) => rest);
+
+          // HARD GUARD: reject if any bill's date doesn't belong in this FY table
+          const fyStart = parseInt(fy.split("-")[0], 10);
+          const fyMin = `${fyStart}-04-01`;
+          const fyMax = `${fyStart + 1}-03-31`;
+          const outOfRange = cleanRows.filter(r => r.date && (r.date < fyMin || r.date > fyMax));
+          if (outOfRange.length > 0) {
+            console.error("🚨 Date/FY mismatch — aborting save for", fy, outOfRange.map(r => r.refNo));
+            showToast(`Cannot save: bills have dates outside FY ${fy}`, "error");
+            return; // Abort entire save — nothing written
+          }
+
           console.log(`⬆️ Saving ${cleanRows.length} rows to FY ${fy}...`);
           const ok = await upsertWorkingBatch(cleanRows, fy);
           console.log(`✅ FY ${fy} save result:`, ok);
