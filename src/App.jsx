@@ -3772,7 +3772,23 @@ const parseFlashData = (pastedText) => {
     parsed.push({
       id: Math.random().toString(36).substr(2, 9),
       refNo: cols[0],
-      date: cols[1],
+      date: (() => {
+  const t = (cols[1] || "").trim();
+  if (!t || t === "0") return "";
+  // Excel serial number?
+  const serial = Number(t);
+  if (!isNaN(serial) && serial > 30000 && serial < 100000) {
+    const excelEpoch = new Date(1899, 11, 30);
+    const d = new Date(excelEpoch.getTime() + serial * 86400000);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  }
+  const parts = t.split(/[-/]/);
+  if (parts.length === 3 && parts[2].length === 4) {
+    const [dd, mm, yyyy] = parts;
+    return `${yyyy}-${mm.padStart(2,'0')}-${dd.padStart(2,'0')}`;
+  }
+  return t;
+})(),
       partyName: cols[2],
       broker: cols[3],
       itemName: cols[4],
@@ -6999,9 +7015,70 @@ const activeFyIndex = flatBills.findIndex(i => i.kind === "header" && i.fy === a
       const mode = salesLinkingModal.mode || "single";
       console.log("🟢 SAVE START — mode:", mode);
 
-      if (mode === "single") {
-        // ... existing single-bill code ...
-      } else {
+     if (mode === "single") {
+  const bill = salesLinkingModal.selectedBills?.[0];
+  if (!bill) { showToast("No bill selected", "error"); return; }
+
+  const slotNum = parseInt(salesLinkingModal.slotForSingle, 10);
+  if (!slotNum || slotNum < 1 || slotNum > 3) {
+    showToast("SELECT A SLOT", "error");
+    return;
+  }
+
+  // Bank dates are DD-MM-YYYY; sales working expects YYYY-MM-DD for inputs/display
+  const depositDateIso = (() => {
+    const d = salesLinkingModal.depositDate;
+    if (!d) return "";
+    const parts = d.split('-');
+    if (parts.length !== 3) return d;
+    if (parts[0].length === 4) return d;           // already YYYY-MM-DD
+    const [dd, mm, yyyy] = parts;                  // DD-MM-YYYY
+    return `${yyyy}-${mm}-${dd}`;
+  })();
+
+  const updatedBill = {
+    ...bill,
+    [`bankPmt${slotNum}`]: salesLinkingModal.depositAmt,
+    [`bankDate${slotNum}`]: depositDateIso,
+    [`pmtId${slotNum}`]: salesLinkingModal.chqRef
+  };
+
+  const billFy = bill._fy || activeFY;
+  const ok = await upsertWorkingBatch([updatedBill], billFy);
+  if (!ok) { showToast("Failed to save bill — check connection", "error"); return; }
+
+  // Update bank transaction link
+  const bankTrans = bankingData[selectedReconcileBank].find(
+    t => t.id === salesLinkingModal.bankTransId
+  );
+  if (bankTrans) {
+    const updatedBank = {
+      ...bankTrans,
+      linkedRefNo: bill.refNo,
+      partyName: bill.partyName,
+      linkedFy: billFy
+    };
+    await updateBankTransaction(updatedBank);
+    setBankingData(prev => ({
+      ...prev,
+      [selectedReconcileBank]: prev[selectedReconcileBank].map(t =>
+        t.id === bankTrans.id ? updatedBank : t
+      )
+    }));
+  }
+
+  // Sync local state
+  setSalesWorkingData(prev => prev.map(b => b.id === bill.id ? updatedBill : b));
+  setAllFYSalesWorking(prev => prev.map(b => b.id === bill.id ? updatedBill : b));
+
+  showToast(`Allocated to Ref No ${bill.refNo} | PMT ID: ${salesLinkingModal.chqRef}`);
+  setSalesLinkingModal(null);
+  setSelectedBankTransId(null);
+  return;   // ← IMPORTANT: stop here so it doesn't run the multi code below
+}
+      
+      
+       else {
         // MULTI BILL
         const selections = salesLinkingModal.multiBillSelections || {};
         const selectedIds = Object.entries(selections).filter(([,v]) => v?.checked).map(([id]) => id);
@@ -7068,23 +7145,32 @@ const calc = calcCache[bill.id] || calculateSalesFields(bill);
           const cleanRows = rows.map(({ _fy, ...rest }) => rest);
 
           // HARD GUARD: reject if any bill's date doesn't belong in this FY table
-          const fyStart = parseInt(fy.split("-")[0], 10);
-          const fyMin = `${fyStart}-04-01`;
-          const fyMax = `${fyStart + 1}-03-31`;
-          const outOfRange = cleanRows.filter(r => r.date && (r.date < fyMin || r.date > fyMax));
-          if (outOfRange.length > 0) {
-            console.error("🚨 Date/FY mismatch — aborting save for", fy, outOfRange.map(r => r.refNo));
-            showToast(`Cannot save: bills have dates outside FY ${fy}`, "error");
-            return; // Abort entire save — nothing written
-          }
+const fyStart = parseInt(fy.split("-")[0], 10);
+const fyMinComp = `${fyStart}0401`;          // YYYYMMDD
+const fyMaxComp = `${fyStart + 1}0331`;      // YYYYMMDD
 
-          console.log(`⬆️ Saving ${cleanRows.length} rows to FY ${fy}...`);
-          const ok = await upsertWorkingBatch(cleanRows, fy);
-          console.log(`✅ FY ${fy} save result:`, ok);
-          if (!ok) {
-            showToast(`Failed to save FY ${fy} — check console`, "error");
-            return;
-          }
+const toComparableDate = (dateStr) => {
+  if (!dateStr) return "";
+  const parts = String(dateStr).split('-');
+  if (parts.length !== 3) return "";
+  // Handle both DD-MM-YYYY and YYYY-MM-DD
+  if (parts[0].length === 4) {
+    return parts[0] + parts[1] + parts[2];   // YYYY MM DD
+  } else {
+    return parts[2] + parts[1] + parts[0];   // YYYY MM DD
+  }
+};
+
+const outOfRange = cleanRows.filter(r => {
+  const comp = toComparableDate(r.date);
+  return comp && (comp < fyMinComp || comp > fyMaxComp);
+});
+
+if (outOfRange.length > 0) {
+  console.error("🚨 Date/FY mismatch — aborting save for", fy, outOfRange.map(r => r.refNo));
+  showToast(`Cannot save: bills have dates outside FY ${fy}`, "error");
+  return; // Abort entire save — nothing written
+}
         }
 
         // Update bank transaction
