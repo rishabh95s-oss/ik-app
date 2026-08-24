@@ -794,6 +794,8 @@ const WORKING_TABLE_COMPONENTS = {
   // true = user explicitly typed in the TDS field; false = auto-calc mode
   const tdsManualRef = useRef(false);
 
+  
+  
   const isTdsAuto = (record) => {
     if (record.tdsReceived === "" || record.tdsReceived === null || record.tdsReceived === undefined) return true;
     const auto = getAutoTds(record);
@@ -7249,8 +7251,15 @@ if (outOfRange.length > 0) {
   showToast(`Cannot save: bills have dates outside FY ${fy}`, "error");
   return; // Abort entire save — nothing written
 }
-        }
-
+        
+  const ok = await upsertWorkingBatch(cleanRows, fy);
+  if (!ok) {
+    showToast(`Failed to save FY ${fy} bills — check connection`, "error");
+    return;
+  }
+}
+       
+       
         // Update bank transaction
         const linkedRefNos = updatedBills.map(b => b.refNo).join(", ");
         const linkedParties = [...new Set(updatedBills.map(b => b.partyName))].join(", ");
