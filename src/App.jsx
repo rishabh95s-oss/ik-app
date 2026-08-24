@@ -780,7 +780,26 @@ const WORKING_TABLE_COMPONENTS = {
 
   const SalesWorkingCells = React.memo(function SalesWorkingCells({ rec, onUpdate, onSave, claimRules }) {
   const calculated = calculateSalesFields(rec);
+    
+  const getAutoTds = (record) => {
+    const matchedRule = claimRules?.find(r => r.partyName === record.partyName);
+    const rule = matchedRule?.tdsRule || "manual";
+    if (rule === "manual") return null;
+    const tdsBase = matchedRule?.tdsBase || "gross";
+    const claim = parseFloat(record.claim) || 0;
+    const cd = parseFloat(record.cd) || 0;
+    return calculateTdsFromRule(rule, record.receivedWeight, record.rate, claim, cd, tdsBase);
+  };
 
+  // true = user explicitly typed in the TDS field; false = auto-calc mode
+  const tdsManualRef = useRef(false);
+
+  const isTdsAuto = (record) => {
+    if (record.tdsReceived === "" || record.tdsReceived === null || record.tdsReceived === undefined) return true;
+    const auto = getAutoTds(record);
+    if (auto === null) return false;
+    return Math.abs(parseFloat(record.tdsReceived) - auto) < 0.01;
+  };
   const editStyle = { width:"100%", padding:"2px 4px", background:"#1a2236", border:"1px solid #1e2a3a", borderRadius:3, color:"#cbd5e1", fontSize:10 };
   const tdEdit = { padding:"3px 3px", borderRight:"1px solid #1e2a3a" };
   const tdR = { padding:"6px 6px", color:"#cbd5e1", textAlign:"right", whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a", overflow:"hidden", textOverflow:"ellipsis" };
@@ -799,17 +818,33 @@ const WORKING_TABLE_COMPONENTS = {
     onBlur={() => onSave({ ...rec, qty: rec.qty })}
     style={editStyle} />
 </td>
+
 <td style={tdEdit}>
   <input type="number" step="0.01" value={rec.rate}
     onChange={(e) => onUpdate({ ...rec, rate: parseFloat(e.target.value) || 0 })}
-    onBlur={() => onSave({ ...rec, rate: rec.rate })}
+    onBlur={() => {
+      const patch = { ...rec, rate: rec.rate };
+      if (!tdsManualRef.current) {
+        const autoTds = getAutoTds(rec);
+        if (autoTds !== null) patch.tdsReceived = autoTds;
+      }
+      onSave(patch);
+    }}
     style={editStyle} />
 </td>
 
-      <td style={tdEdit}>
+          <td style={tdEdit}>
         <input type="number" value={rec.receivedWeight}
           onChange={(e) => onUpdate({ ...rec, receivedWeight: parseFloat(e.target.value) || 0 })}
-          onBlur={() => onSave(rec)} style={editStyle} />
+          onBlur={() => {
+            const patch = { ...rec };
+            if (!tdsManualRef.current) {
+              const autoTds = getAutoTds(rec);
+              if (autoTds !== null) patch.tdsReceived = autoTds;
+            }
+            onSave(patch);
+          }}
+          style={editStyle} />
       </td>
 
       <td style={tdR}>{calculated.shortage.toFixed(2)}</td>
@@ -823,76 +858,110 @@ const WORKING_TABLE_COMPONENTS = {
 </td>
 <td style={tdR}>₹{calculated.gunnyAmount}</td>
 
-    <td style={tdEdit}>
+ <td style={tdEdit}>
   <input type="number" step="0.01" value={rec.claimPct}
     onChange={(e) => {
       const claimPct = parseFloat(e.target.value) || 0;
       const claim = Math.round((rec.receivedWeight * rec.rate * claimPct) / 100);
       onUpdate({ ...rec, claimPct, claim });
     }}
-    onBlur={() => onSave({ ...rec, claimPct: rec.claimPct, claim: rec.claim })}
+    onBlur={() => {
+      const patch = { ...rec, claimPct: rec.claimPct, claim: rec.claim };
+      if (!tdsManualRef.current) {
+        const autoTds = getAutoTds(rec);
+        if (autoTds !== null) patch.tdsReceived = autoTds;
+      }
+      onSave(patch);
+    }}
     style={editStyle} />
 </td>
 
-     <td style={tdEdit}>
+  <td style={tdEdit}>
   <input type="number" value={rec.claim}
     onChange={(e) => {
       const claim = parseFloat(e.target.value) || 0;
       const claimPct = rec.receivedWeight > 0 ? (claim * 100) / (rec.rate * rec.receivedWeight) : 0;
       onUpdate({ ...rec, claim, claimPct: parseFloat(claimPct.toFixed(2)) });
     }}
-    onBlur={() => onSave({ ...rec, claim: rec.claim, claimPct: rec.claimPct })}
+    onBlur={() => {
+      const patch = { ...rec, claim: rec.claim, claimPct: rec.claimPct };
+      if (!tdsManualRef.current) {
+        const autoTds = getAutoTds(rec);
+        if (autoTds !== null) patch.tdsReceived = autoTds;
+      }
+      onSave(patch);
+    }}
     style={editStyle} />
 </td>
 
-     <td style={tdEdit}>
+    <td style={tdEdit}>
   <input type="number" step="0.01" value={rec.cdPct}
     onChange={(e) => {
       const cdPct = parseFloat(e.target.value) || 0;
       const cd = Math.round((rec.rate * rec.receivedWeight * cdPct) / 100);
       onUpdate({ ...rec, cdPct, cd });
     }}
-    onBlur={() => onSave({ ...rec, cdPct: rec.cdPct, cd: rec.cd })}
+    onBlur={() => {
+      const patch = { ...rec, cdPct: rec.cdPct, cd: rec.cd };
+      if (!tdsManualRef.current) {
+        const autoTds = getAutoTds(rec);
+        if (autoTds !== null) patch.tdsReceived = autoTds;
+      }
+      onSave(patch);
+    }}
     style={editStyle} />
 </td>
      
-   <td style={tdEdit}>
+ <td style={tdEdit}>
   <input type="number" value={rec.cd}
     onChange={(e) => {
       const cd = parseFloat(e.target.value) || 0;
       const cdPct = rec.receivedWeight > 0 ? (cd * 100) / (rec.rate * rec.receivedWeight) : 0;
       onUpdate({ ...rec, cd, cdPct: parseFloat(cdPct.toFixed(2)) });
     }}
-    onBlur={() => onSave({ ...rec, cd: rec.cd, cdPct: rec.cdPct })}
+    onBlur={() => {
+      const patch = { ...rec, cd: rec.cd, cdPct: rec.cdPct };
+      if (!tdsManualRef.current) {
+        const autoTds = getAutoTds(rec);
+        if (autoTds !== null) patch.tdsReceived = autoTds;
+      }
+      onSave(patch);
+    }}
     style={editStyle} />
 </td>
       
 <td style={tdEdit}>
-  <input type="number" value={rec.tdsReceived}
-    onChange={(e) => onUpdate({ ...rec, tdsReceived: parseFloat(e.target.value) || 0 })}
-  onBlur={() => {
-  console.log('TDS BLUR - party:', rec.partyName, 'tdsReceived:', rec.tdsReceived);
-  
-  if (!rec.tdsReceived || rec.tdsReceived === 0) {
-    const matchedRule = claimRules?.find(r => r.partyName === rec.partyName);
-    const rule = matchedRule?.tdsRule || "manual";
-    const tdsBase = matchedRule?.tdsBase || "gross";
-    
-    // Get claim and cd from the record (adjust field names if different)
-    const claim = rec.claim || 0;
-    const cd = rec.cd || 0;
-    
-    console.log('RULE:', rule, 'TDS BASE:', tdsBase, 'CLAIM:', claim, 'CD:', cd);
-    
-    const autoTds = calculateTdsFromRule(rule, rec.receivedWeight, rec.rate, claim, cd, tdsBase);
-    console.log('CALCULATED TDS:', autoTds);
-    
-    onSave({ ...rec, tdsReceived: autoTds });
-  } else {
-    onSave(rec);
-  }
-}}
-    style={editStyle} />
+  <input
+    type="number"
+    value={rec.tdsReceived}
+    onChange={(e) => {
+      const val = e.target.value;
+      if (val !== "") tdsManualRef.current = true;   // user typed = manual mode
+      onUpdate({ ...rec, tdsReceived: val === "" ? "" : parseFloat(val) || 0 });
+    }}
+    onBlur={() => {
+      console.log('TDS BLUR - party:', rec.partyName, 'tdsReceived:', rec.tdsReceived);
+      
+      if (rec.tdsReceived === "" || rec.tdsReceived === null || rec.tdsReceived === undefined) {
+        tdsManualRef.current = false;                  // cleared = back to auto
+        const matchedRule = claimRules?.find(r => r.partyName === rec.partyName);
+        const rule = matchedRule?.tdsRule || "manual";
+        const tdsBase = matchedRule?.tdsBase || "gross";
+        const claim = rec.claim || 0;
+        const cd = rec.cd || 0;
+        
+        console.log('RULE:', rule, 'TDS BASE:', tdsBase, 'CLAIM:', claim, 'CD:', cd);
+        
+        const autoTds = calculateTdsFromRule(rule, rec.receivedWeight, rec.rate, claim, cd, tdsBase);
+        console.log('CALCULATED TDS:', autoTds);
+        
+        onSave({ ...rec, tdsReceived: autoTds });
+      } else {
+        onSave({ ...rec, tdsReceived: parseFloat(rec.tdsReceived) || 0 });
+      }
+    }}
+    style={editStyle}
+  />
 </td>
 
       <td style={tdR}>₹{calculated.netAmt}</td>
