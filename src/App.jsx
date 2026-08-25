@@ -3146,6 +3146,162 @@ const c = calcAll(p, tds, cdRule);
 }
 
 
+function MultiSelectDropdown({ options, selected, onChange, placeholder = "Select..." }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef();
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const toggle = (val) => {
+    onChange(
+      selected.includes(val)
+        ? selected.filter((v) => v !== val)
+        : [...selected, val]
+    );
+  };
+
+  const allSelected = selected.length === options.length && options.length > 0;
+  const label =
+    selected.length === 0
+      ? placeholder
+      : selected.length === 1
+      ? selected[0]
+      : `${selected.length} parties selected`;
+
+  return (
+    <div ref={ref} style={{ position: "relative", minWidth: 220 }}>
+      <button
+        onClick={() => setOpen((p) => !p)}
+        style={{
+          width: "100%",
+          background: "#0f1117",
+          border: "1px solid #1e2a3a",
+          borderRadius: 8,
+          padding: "9px 12px",
+          color: selected.length ? "#e2e8f0" : "#64748b",
+          fontSize: 13,
+          fontWeight: 600,
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          textAlign: "left"
+        }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {label}
+        </span>
+        <span style={{ marginLeft: 8, fontSize: 10 }}>{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            left: 0,
+            right: 0,
+            background: "#151b2a",
+            border: "1px solid #1e2a3a",
+            borderRadius: 8,
+            zIndex: 1000,
+            maxHeight: 320,
+            overflowY: "auto",
+            boxShadow: "0 8px 24px rgba(0,0,0,.5)"
+          }}
+        >
+          {/* Actions */}
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              padding: "8px 12px",
+              borderBottom: "1px solid #1e2a3a",
+              position: "sticky",
+              top: 0,
+              background: "#151b2a",
+              zIndex: 1
+            }}
+          >
+            <button
+              onClick={() => onChange([...options])}
+              style={{
+                flex: 1,
+                background: allSelected ? "#22c55e" : "#1e2a3a",
+                border: "none",
+                borderRadius: 6,
+                padding: "5px 10px",
+                color: "#fff",
+                fontWeight: 700,
+                fontSize: 11,
+                cursor: "pointer"
+              }}
+            >
+              Select All
+            </button>
+            <button
+              onClick={() => onChange([])}
+              style={{
+                flex: 1,
+                background: selected.length ? "#ef4444" : "#1e2a3a",
+                border: "none",
+                borderRadius: 6,
+                padding: "5px 10px",
+                color: "#fff",
+                fontWeight: 700,
+                fontSize: 11,
+                cursor: "pointer"
+              }}
+            >
+              Clear
+            </button>
+          </div>
+
+          {/* Options */}
+          {options.map((opt) => {
+            const isChecked = selected.includes(opt);
+            return (
+              <div
+                key={opt}
+                onClick={() => toggle(opt)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "9px 14px",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  color: "#cbd5e1",
+                  borderBottom: "1px solid #0f1117",
+                  background: isChecked ? "#22c55e11" : "transparent"
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#1e2a3a")}
+                onMouseLeave={(e) =>
+                  (e.currentTarget.style.background = isChecked ? "#22c55e11" : "transparent")
+                }
+              >
+                <input
+                  type="checkbox"
+                  checked={isChecked}
+                  readOnly
+                  style={{ width: 14, height: 14, cursor: "pointer", accentColor: "#22c55e" }}
+                />
+                <span style={{ fontWeight: isChecked ? 600 : 400 }}>{opt}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
  
   // USER MANAGEMENT STATES
@@ -3756,6 +3912,7 @@ const [purchaseFlashData, setPurchaseFlashData] = useState([]);
 const [salesWorkingData, setSalesWorkingData] = useState([]);
 const [claimRules, setClaimRules] = useState([]);
 const [selectedSalesTab, setSelectedSalesTab] = useState("flash");
+const [groupByPmtSelectedParties, setGroupByPmtSelectedParties] = useState([]);
 const [salesSearch, setSalesSearch] = useState("");
 const [salesFilterParty, setSalesFilterParty] = useState("");
 const [salesFilterBroker, setSalesFilterBroker] = useState("");
@@ -8167,7 +8324,7 @@ const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
       );
 })()}
  
- {selectedSalesTab === "groupbypmt" && (() => {
+{selectedSalesTab === "groupbypmt" && (() => {
   const parseBankDate = (d) => {
     if (!d) return null;
     const p = String(d).split('-');
@@ -8198,19 +8355,27 @@ const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
     });
   });
 
-  const groupList = Object.entries(groups).map(([pid, rows]) => {
+  const rawGroupList = Object.entries(groups).map(([pid, rows]) => {
     const bankTrans = bankByChq.get(pid);
     const bankAmt = bankTrans ? (parseFloat(bankTrans.depositAmt) || 0) : 0;
     const bankDate = bankTrans ? bankTrans.date : "";
-    const billsTotal = rows.reduce((s, r) => s + r.allocated, 0);
     const sortedRows = [...rows].sort((a, b) => {
       const pa = parseRefNo(a.bill.refNo), pb = parseRefNo(b.bill.refNo);
       return pa.num !== pb.num ? pa.num - pb.num : pa.suf.localeCompare(pb.suf);
     });
-    return { pid, rows: sortedRows, bankAmt, bankDate, billsTotal, diff: billsTotal - bankAmt };
+    return { pid, rows: sortedRows, bankAmt, bankDate };
   });
 
-  groupList.sort((a, b) => {
+  const filteredGroupList = rawGroupList.map(g => {
+    const filteredRows = g.rows.filter(r =>
+      groupByPmtSelectedParties.length === 0 ||
+      groupByPmtSelectedParties.includes(r.bill.partyName)
+    );
+    const billsTotal = filteredRows.reduce((s, r) => s + r.allocated, 0);
+    return { ...g, rows: filteredRows, billsTotal, diff: billsTotal - g.bankAmt };
+  }).filter(g => g.rows.length > 0);
+
+  filteredGroupList.sort((a, b) => {
     const da = parseBankDate(a.bankDate), db = parseBankDate(b.bankDate);
     if (!da && !db) return 0;
     if (!da) return 1;
@@ -8218,13 +8383,16 @@ const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
     return da - db;
   });
 
+  const allParties = [...new Set(salesWorkingData.map(r => r.partyName).filter(Boolean))].sort();
+
   const money = (v) => "₹" + Number(v).toLocaleString("en-IN", { maximumFractionDigits: 2 });
   const th = { padding:"8px 10px", textAlign:"left", color:"#64748b", fontWeight:700, fontSize:11, whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a" };
   const thR = { ...th, textAlign:"right" };
   const td = { padding:"8px 10px", color:"#cbd5e1", fontSize:11, whiteSpace:"nowrap", borderRight:"1px solid #1e2a3a" };
   const tdR = { ...td, textAlign:"right" };
+
   const handlePrintGroups = () => {
-    if (groupList.length === 0) { showToast("Nothing to print", "error"); return; }
+    if (filteredGroupList.length === 0) { showToast("Nothing to print", "error"); return; }
     const w = window.open('', '', 'height=700,width=1100');
     let html = `<style>
       @page { size: A4 landscape; margin: 8mm; }
@@ -8237,37 +8405,108 @@ const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
       .r { text-align: right; }
       .tot { font-weight: bold; background: #eee; }
     </style>`;
-    html += `<h2>GROUP BY PMT — ${groupList.length} payments</h2>`;
-    groupList.forEach(g => {
-      html += `<div class="ghead">PMT ${g.pid} — Bank Deposit ₹${Number(g.bankAmt).toLocaleString("en-IN",{maximumFractionDigits:2})} · ${g.bankDate || "—"} · ${g.diff === 0 ? "MATCHED" : (g.diff > 0 ? "OVER ₹"+Number(g.diff).toLocaleString("en-IN",{maximumFractionDigits:2}) : "SHORT ₹"+Number(-g.diff).toLocaleString("en-IN",{maximumFractionDigits:2}))}</div>`;
+    html += `<h2>GROUP BY PMT — ${filteredGroupList.length} payments</h2>`;
+    if (groupByPmtSelectedParties.length > 0) {
+      html += `<p style="font-size:11px;margin:0 0 8px"><strong>Filtered Parties:</strong> ${groupByPmtSelectedParties.join(", ")}</p>`;
+    }
+    filteredGroupList.forEach(g => {
+      const displayBankDate = fmtDisplayDate(g.bankDate);
+      html += `<div class="ghead">PMT ${g.pid} — Bank Deposit ₹${Number(g.bankAmt).toLocaleString("en-IN",{maximumFractionDigits:2})} · ${displayBankDate || "—"} · ${g.diff === 0 ? "MATCHED" : (g.diff > 0 ? "OVER ₹"+Number(g.diff).toLocaleString("en-IN",{maximumFractionDigits:2}) : "SHORT ₹"+Number(-g.diff).toLocaleString("en-IN",{maximumFractionDigits:2}))}</div>`;
       html += `<table><thead><tr><th>Ref No</th><th>Date</th><th>Party</th><th class="r">Net Amt</th><th class="r">Slot</th><th class="r">Allocated</th><th class="r">Pending</th><th class="r">Days</th></tr></thead><tbody>`;
       g.rows.forEach(r => {
         const c = calculateSalesFields(r.bill);
-        html += `<tr><td>${r.bill.refNo}</td><td>${r.bill.date || ""}</td><td>${r.bill.partyName || ""}</td><td class="r">₹${Number(c.netAmt).toLocaleString("en-IN",{maximumFractionDigits:2})}</td><td class="r">${r.slot}</td><td class="r">₹${Number(r.allocated).toLocaleString("en-IN",{maximumFractionDigits:2})}</td><td class="r">₹${Number(c.pendingAmt).toLocaleString("en-IN",{maximumFractionDigits:2})}</td><td class="r">${c.days}</td></tr>`;
+        const displayDate = fmtDisplayDate(r.bill.date);
+        html += `<tr><td>${r.bill.refNo}</td><td>${displayDate || ""}</td><td>${r.bill.partyName || ""}</td><td class="r">₹${Number(c.netAmt).toLocaleString("en-IN",{maximumFractionDigits:2})}</td><td class="r">${r.slot}</td><td class="r">₹${Number(r.allocated).toLocaleString("en-IN",{maximumFractionDigits:2})}</td><td class="r">₹${Number(c.pendingAmt).toLocaleString("en-IN",{maximumFractionDigits:2})}</td><td class="r">${c.days}</td></tr>`;
       });
       html += `<tr class="tot"><td colspan="5">TOTAL (${g.rows.length})</td><td class="r">₹${Number(g.billsTotal).toLocaleString("en-IN",{maximumFractionDigits:2})}</td><td colspan="2"></td></tr>`;
       html += `</tbody></table>`;
     });
     w.document.write(html); w.document.close(); w.print();
   };
- 
-  if (groupList.length === 0) {
+
+  if (rawGroupList.length === 0) {
     return <div style={{ padding:40, textAlign:"center", color:"#64748b" }}>No linked PMTs yet.</div>;
   }
 
- return (
+  return (
     <div>
-      <div style={{ marginBottom:16 }}>
-        <button onClick={handlePrintGroups} style={{ background:"#3b82f6", border:"none", borderRadius:8, padding:"9px 16px", color:"#fff", fontWeight:700, fontSize:12, cursor:"pointer" }}>
-          🖨️ Print All Groups
+      {/* PARTY FILTER BAR */}
+      <div style={{ display: "flex", gap: 16, marginBottom: 20, alignItems: "center", flexWrap: "wrap" }}>
+        <MultiSelectDropdown
+          options={allParties}
+          selected={groupByPmtSelectedParties}
+          onChange={setGroupByPmtSelectedParties}
+          placeholder="Filter by Party..."
+        />
+
+        {groupByPmtSelectedParties.length > 0 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", flex: 1, alignItems: "center" }}>
+            {groupByPmtSelectedParties.slice(0, 5).map((p) => (
+              <span
+                key={p}
+                style={{
+                  background: "#22c55e22",
+                  border: "1px solid #22c55e",
+                  borderRadius: 6,
+                  padding: "4px 10px",
+                  fontSize: 11,
+                  color: "#22c55e",
+                  fontWeight: 600
+                }}
+              >
+                {p}
+              </span>
+            ))}
+            {groupByPmtSelectedParties.length > 5 && (
+              <span style={{ fontSize: 11, color: "#64748b" }}>
+                +{groupByPmtSelectedParties.length - 5} more
+              </span>
+            )}
+            <button
+              onClick={() => setGroupByPmtSelectedParties([])}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "#ef4444",
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: "pointer",
+                marginLeft: 4
+              }}
+            >
+              Reset
+            </button>
+          </div>
+        )}
+
+        <button
+          onClick={handlePrintGroups}
+          style={{
+            background: "#3b82f6",
+            border: "none",
+            borderRadius: 8,
+            padding: "9px 18px",
+            color: "#fff",
+            fontWeight: 700,
+            fontSize: 12,
+            cursor: "pointer",
+            marginLeft: "auto"
+          }}
+        >
+          🖨️ Print {groupByPmtSelectedParties.length > 0 ? "Filtered" : "All"}
         </button>
       </div>
-      {groupList.map(g => (
+
+      {filteredGroupList.length === 0 && (
+        <div style={{ padding:40, textAlign:"center", color:"#64748b" }}>No records match the selected filters.</div>
+      )}
+
+      {filteredGroupList.map(g => (
         <div key={g.pid} style={{ marginBottom:28, border:"1px solid #1e2a3a", borderRadius:8, overflow:"hidden" }}>
           <div style={{ padding:"12px 16px", background:"#151b2a", borderBottom:"1px solid #1e2a3a", display:"flex", gap:16, alignItems:"center", flexWrap:"wrap" }}>
             <span style={{ fontWeight:800, color:"#f59e0b", fontSize:14 }}>PMT {g.pid}</span>
             <span style={{ color:"#cbd5e1", fontSize:12 }}>Bank Deposit <strong>{money(g.bankAmt)}</strong></span>
-            <span style={{ color:"#64748b", fontSize:12 }}>{g.bankDate || "—"}</span>
+            <span style={{ color:"#64748b", fontSize:12 }}>{fmtDisplayDate(g.bankDate) || "—"}</span>
             <span style={{ marginLeft:"auto", fontSize:12, fontWeight:700, color: g.diff === 0 ? "#22c55e" : "#ef4444" }}>
               {g.diff === 0 ? "✓ Matched" : (g.diff > 0 ? `Over ${money(g.diff)}` : `Short ${money(-g.diff)}`)}
             </span>
@@ -8292,7 +8531,7 @@ const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
                   return (
                     <tr key={`${g.pid}-${r.bill.id}-${r.slot}`} style={{ background: i % 2 === 0 ? "#0f1117" : "#151b2a", borderBottom:"1px solid #1e2a3a" }}>
                       <td style={td}>{r.bill.refNo}</td>
-                      <td style={td}>{r.bill.date}</td>
+                      <td style={td}>{fmtDisplayDate(r.bill.date)}</td>
                       <td style={td}>{r.bill.partyName}</td>
                       <td style={tdR}>{money(c.netAmt)}</td>
                       <td style={tdR}>{r.slot}</td>
