@@ -1596,7 +1596,7 @@ const tdR = { padding:"6px 6px", color:"#cbd5e1", textAlign:"right", whiteSpace:
 
 const SALES_SUMMARY_COLS = [
   { key:"refNo",          label:"Ref No",       align:"left",  type:"text"  },
-  { key:"date",           label:"Date",         align:"left",  type:"text"  },
+  { key:"date",           label:"Date",         align:"left",  type:"date"  },
   { key:"partyName",      label:"Party",        align:"left",  type:"text"  },
   { key:"broker",         label:"Broker",       align:"left",  type:"text"  },
   { key:"qty",            label:"Qty",          align:"right", type:"num"   },
@@ -4110,11 +4110,11 @@ const normalizeDate = (dateStr) => {
     return `${p3.padStart(2,'0')}-${p2.padStart(2,'0')}-${p1}`;
   }
 
-  // MM-DD-YYYY (US format — only if p1 <= 12 and p2 <= 31)
-  if (!isNaN(p1) && !isNaN(p2) && p3.length === 4 && 
-      parseInt(p1) <= 12 && parseInt(p2) <= 31) {
-    return `${p2.padStart(2,'0')}-${p1.padStart(2,'0')}-${p3}`;
-  }
+      // MM-DD-YYYY (US format — only if p2 > 12, which proves it can't be a month)
+    if (!isNaN(p1) && !isNaN(p2) && p3.length === 4 && 
+        parseInt(p1) <= 12 && parseInt(p2) > 12) {
+      return `${p2.padStart(2,'0')}-${p1.padStart(2,'0')}-${p3}`;
+    }
 
   // DD-MMM-YY/YYYY or DD-MMMM-YY/YYYY
   if (isNaN(p2)) {
@@ -4437,7 +4437,23 @@ useEffect(() => {
       loadBankTransactions('SBI'),
       loadBankTransactions('VASB')
     ]);
-    setBankingData({ HDFC: hdfc, SBI: sbi, VASB: vasb });
+   
+        // Supabase sometimes returns ISO dates for 26-27; normalize to DD-MM-YYYY
+    // so the entire app sees one consistent format (same as 25-26).
+    const fixBankDate = (d) => {
+      if (!d) return "";
+      const p = String(d).split('-');
+      if (p.length === 3 && p[0].length === 4) {
+        return `${p[2].padStart(2,'0')}-${p[1].padStart(2,'0')}-${p[0]}`;
+      }
+      return d;
+    };
+
+    setBankingData({
+      HDFC: hdfc.map(t => ({ ...t, date: fixBankDate(t.date), valueDt: fixBankDate(t.valueDt) })),
+      SBI: sbi.map(t => ({ ...t, date: fixBankDate(t.date), valueDt: fixBankDate(t.valueDt) })),
+      VASB: vasb.map(t => ({ ...t, date: fixBankDate(t.date) }))
+    });
 
    // Load pmt linked slots (year-filtered)
     const slots = await loadPmtLinkedSlots(activeFY);
@@ -4521,6 +4537,80 @@ const hasBlankBroker = useMemo(() => {
     const pool = filterBroker ? records.filter(r => r.brokerName === filterBroker) : records;
     return pool.some(r => !(r.partyName || "").trim());
   }, [records, filterBroker]);
+  
+  // Cache calculateSalesFields for every bill in salesWorkingData
+const salesCalcCache = useMemo(() => {
+  const cache = {};
+  salesWorkingData.forEach(bill => {
+    cache[bill.id] = calculateSalesFields(bill);
+  });
+  return cache;
+}, [salesWorkingData]);
+
+// Pre-build the Group By PMT data so it doesn't recompute on every render
+const groupByPmtList = useMemo(() => {
+  const parseBankDate = (d) => {
+    if (!d) return null;
+    const p = String(d).split('-');
+    if (p.length !== 3) return null;
+    let [dd, mm, yy] = p;
+    if (yy.length === 2) yy = "20" + yy;
+    return new Date(parseInt(yy), parseInt(mm) - 1, parseInt(dd));
+  };
+
+  const parseRefNo = (ref) => {
+    const s = String(ref || "").trim();
+    const m = s.match(/^(\d+)(.*)$/);
+    return m ? { num: parseInt(m[1], 10), suf: m[2].toUpperCase() } : { num: Infinity, suf: s.toUpperCase() };
+  };
+
+  const allBank = [...(bankingData.HDFC || []), ...(bankingData.SBI || []), ...(bankingData.VASB || [])];
+  const bankByChq = new Map();
+  allBank.forEach(t => { if (t.chqRef) bankByChq.set(String(t.chqRef).trim(), t); });
+
+  const groups = {};
+  salesWorkingData.forEach(bill => {
+    [1, 2, 3].forEach(slot => {
+      const pid = String(bill[`pmtId${slot}`] || "").trim();
+      const amt = parseFloat(bill[`bankPmt${slot}`]) || 0;
+      if (!pid) return;
+      if (!groups[pid]) groups[pid] = [];
+      groups[pid].push({ bill, slot, allocated: amt });
+    });
+  });
+
+  const rawGroupList = Object.entries(groups).map(([pid, rows]) => {
+    const bankTrans = bankByChq.get(pid);
+    const bankAmt = bankTrans ? (parseFloat(bankTrans.depositAmt) || 0) : 0;
+    const bankDate = bankTrans ? bankTrans.date : "";
+    const sortedRows = [...rows].sort((a, b) => {
+      const pa = parseRefNo(a.bill.refNo), pb = parseRefNo(b.bill.refNo);
+      return pa.num !== pb.num ? pa.num - pb.num : pa.suf.localeCompare(pb.suf);
+    });
+    return { pid, rows: sortedRows, bankAmt, bankDate };
+  });
+
+  // Apply party filter
+  const filtered = rawGroupList.map(g => {
+    const filteredRows = g.rows.filter(r =>
+      groupByPmtSelectedParties.length === 0 ||
+      groupByPmtSelectedParties.includes(r.bill.partyName)
+    );
+    const billsTotal = filteredRows.reduce((s, r) => s + r.allocated, 0);
+    return { ...g, rows: filteredRows, billsTotal, diff: billsTotal - g.bankAmt };
+  }).filter(g => g.rows.length > 0);
+
+  filtered.sort((a, b) => {
+    const da = parseBankDate(a.bankDate), db = parseBankDate(b.bankDate);
+    if (!da && !db) return 0;
+    if (!da) return 1;
+    if (!db) return -1;
+    return da - db;
+  });
+
+  return filtered;
+}, [salesWorkingData, bankingData, groupByPmtSelectedParties]);
+  
   
   const handleBrokerChange = (e) => {
     setFilterBroker(e.target.value);
@@ -6119,13 +6209,22 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
    {/* Bank Data Table with Validation (virtualized) */}
     <div style={{ width:"100vw", marginLeft:"calc(50% - 50vw)", borderRadius:8, border:"1px solid #1e2a3a", height:"700px", padding:"0 20px", boxSizing:"border-box" }}>
       {(() => {
-        const toComparable = (dateStr) => {
-          const parts = String(dateStr || "").split('-');
-          if (parts.length !== 3) return "00000000";
-          let [day, month, year] = parts;
-          if (year.length === 2) year = "20" + year;
-          return year + month.padStart(2, '0') + day.padStart(2, '0');
-        };
+ const toComparable = (dateStr) => {
+  const parts = String(dateStr || "").split('-');
+  if (parts.length !== 3) return "00000000";
+  let [p1, p2, p3] = parts;
+
+  // YYYY-MM-DD (loaded from Supabase for 26-27)
+  if (p1.length === 4) {
+    return p1 + p2.padStart(2, '0') + p3.padStart(2, '0');
+  }
+
+  // DD-MM-YY → DD-MM-YYYY
+  if (p3.length === 2) p3 = "20" + p3;
+
+  // DD-MM-YYYY (normal app format, same as 25-26)
+  return p3 + p2.padStart(2, '0') + p1.padStart(2, '0');
+};
 
         const full = [...bankingData[selectedBankTab]].sort((a, b) => {
           const da = toComparable(a.date), db = toComparable(b.date);
