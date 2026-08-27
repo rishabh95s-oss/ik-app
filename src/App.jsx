@@ -3747,10 +3747,11 @@ const [allFYSalesWorking, setAllFYSalesWorking] = useState([]);
 const calcCache = useMemo(() => {
   const cache = {};
   allFYSalesWorking.forEach(bill => {
-    cache[bill.id] = calculateSalesFields(bill);
+    const key = `${bill._fy || activeFY}-${bill.id}`;
+    cache[key] = calculateSalesFields(bill);
   });
   return cache;
-}, [allFYSalesWorking]);
+}, [allFYSalesWorking, activeFY]);
 
 const [pmtUnlinkModal, setPmtUnlinkModal] = useState(null);
 const [pmtLinkedSlots, setPmtLinkedSlots] = useState({});
@@ -7037,7 +7038,7 @@ setAllFYSalesWorking(combined);
       {(!salesLinkingModal.mode || salesLinkingModal.mode === "single") && (() => {
         const bill = salesLinkingModal.selectedBills?.[0];
         if (!bill) return <div style={{ color:"#ef4444", fontSize:12 }}>No bill selected.</div>;
-        const calc = calcCache[bill.id] || calculateSalesFields(bill);
+        const calc = calculateSalesFields(bill);
         const alreadyPaid = (bill.bankPmt1 || 0) + (bill.bankPmt2 || 0) + (bill.bankPmt3 || 0);
         const pending = calc.netAmt - alreadyPaid;
         const slot = salesLinkingModal.slotForSingle || "";
@@ -7450,7 +7451,7 @@ if (!bill) { console.warn("⚠️ Bill not found for id:", id, "fy:", fy); conti
     continue;
   }         
 
-const calc = calcCache[bill.id] || calculateSalesFields(bill);
+const calc = calculateSalesFields(bill);
           const alreadyPaid = (bill.bankPmt1 || 0) + (bill.bankPmt2 || 0) + (bill.bankPmt3 || 0);
           const pending = calc.netAmt - alreadyPaid;
           const toAllocate = selections[id]?.customAmount !== undefined
