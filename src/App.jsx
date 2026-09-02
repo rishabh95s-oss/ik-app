@@ -368,12 +368,12 @@ function calcTDS(form, allRecords) {
 
   const billAmounts = {}; // key: billNo, value: max gross
 
-  // 1. Build map from historical records (exclude only the ref being edited)
+  // 1. Build map from historical records
   const sorted = [...allRecords]
     .filter(r => {
       if (!r.partyName || !r.billDate) return false;
       if (r.partyName.trim() !== partyName) return false;
-      if (editingRefNo && r.refNo?.trim() === editingRefNo) return false;
+      // FIX: removed the editingRefNo exclusion here — we slice by position instead
       return r.billDate >= fyStart && r.billDate <= billDate;
     })
     .sort((a, b) => {
@@ -382,7 +382,30 @@ function calcTDS(form, allRecords) {
       return (parseInt(a.billNo) || 0) - (parseInt(b.billNo) || 0);
     });
 
-  for (const r of sorted) {
+  // ─── FIX START ───
+  // Only bills strictly BEFORE this one in (date, billNo) order count toward threshold.
+  // Same-date bills with higher bill numbers must NOT be treated as historical.
+  let historical;
+  if (editingRefNo) {
+    const ownIdx = sorted.findIndex(r => r.refNo?.trim() === editingRefNo);
+    if (ownIdx >= 0) {
+      historical = sorted.slice(0, ownIdx); // exclude self and everything after
+    } else {
+      // refNo not in array (new entry) — fall through to billNo filter
+      const currentBillNum = parseInt(billNo) || 0;
+      historical = sorted.filter(r => {
+        if (r.billDate < billDate) return true;
+        if (r.billDate > billDate) return false;
+        return (parseInt(r.billNo) || 0) < currentBillNum;
+      });
+    }
+  } else {
+    // No refNo at all — safety fallback
+    historical = sorted;
+  }
+  // ─── FIX END ───
+
+  for (const r of historical) {   // ← changed from `sorted`
     const rGross = Math.round((parseFloat(r.billQty) || 0) * (parseFloat(r.rate) || 0));
     const key = r.billNo?.trim();
     if (!billAmounts[key] || rGross > billAmounts[key]) {
@@ -396,7 +419,7 @@ function calcTDS(form, allRecords) {
     oldCumulative += gross;
   }
 
-  // 3. FIX: Fold current bill into the SAME deduplication map
+  // 3. Fold current bill into the SAME deduplication map
   const currentKey = billNo;
   if (!billAmounts[currentKey] || thisGross > billAmounts[currentKey]) {
     billAmounts[currentKey] = thisGross;
@@ -413,7 +436,7 @@ function calcTDS(form, allRecords) {
   const TDS_THRESHOLD = 5000000;
   const BE = AR - TDS_THRESHOLD;
 
-  // FIX: Only the actual increase caused by this entry is taxable
+  // Only the actual increase caused by this entry is taxable
   const AP = newCumulative - oldCumulative;
 
   let tdsBase = 0;
@@ -2631,11 +2654,11 @@ function ExternalSourcePurchaseTab({ records, setRecords, calcTDS, calcAll, purc
     const lines = pastedText.trim().split('\n');
     const out = [];
 
-    const num = (s) => {
-      const t = (s || "").trim();
-      if (t === "" || t === "0") return "";
-      return t;
-    };
+const num = (s) => {
+    const t = (s || "").trim().replace(/,/g, '');   // ← add .replace(/,/g,'')
+    if (t === "" || t === "0") return "";
+    return t;
+};
     const text0 = (s) => {
       const t = (s || "").trim();
       return t === "0" ? "" : t;
@@ -2686,11 +2709,11 @@ function ExternalSourcePurchaseTab({ records, setRecords, calcTDS, calcAll, purc
     return out;
   };
 
-  const handleImport = async () => {
+    const handleImport = async () => {
     const pasted = prompt("Paste Excel purchase data (with header row):");
     if (!pasted) return;
 
-  const parsed = parsePurchaseData(pasted);
+    const parsed = parsePurchaseData(pasted);
     if (parsed.length === 0) {
       setStatus("❌ Invalid format — check column order / tabs.");
       return;
@@ -2709,35 +2732,45 @@ function ExternalSourcePurchaseTab({ records, setRecords, calcTDS, calcAll, purc
 
     setStatus(`⏳ Importing ${parsed.length} rows...`);
 
-    // Build the complete dataset (existing + imported, imported overwriting by refNo)
-    const merged = [...records];
-    parsed.forEach(p => {
-      const i = merged.findIndex(r => r.refNo.trim().toUpperCase() === p.refNo.trim().toUpperCase());
-      if (i >= 0) merged[i] = p; else merged.push(p);
+    // Sort so earlier bills establish the threshold first (ties broken by refNo)
+    const sortedParsed = [...parsed].sort((a, b) => {
+      if (a.billDate !== b.billDate) return a.billDate.localeCompare(b.billDate);
+      const pa = String(a.refNo || "").match(/^(\d+)/);
+      const pb = String(b.refNo || "").match(/^(\d+)/);
+      return (parseInt(pa?.[1]) || 0) - (parseInt(pb?.[1]) || 0);
     });
 
-    // Compute TDS + calcAll for each imported row against the COMPLETE set
+    // Start with existing DB records only.
+    // Each parsed row is calculated against previously-processed rows,
+    // so duplicate billNos within the same import batch do NOT see each other.
+    const merged = [...records];
+    const finalRecords = [...records];
     let saved = 0;
-    const finalRecords = [...merged];
-    for (const p of parsed) {
-     const tds = p.partyName ? calcTDS(p, merged) : 0;
-const cdRule = claimRules.find(r => r.partyName === p.deliveryAt)?.cdRule || "standard";
-const c = calcAll(p, tds, cdRule);
+
+    for (const p of sortedParsed) {
+      // Calculate TDS BEFORE this row enters the dataset
+      const tds = p.partyName ? calcTDS(p, merged) : 0;
+      const cdRule = claimRules.find(r => r.partyName === p.deliveryAt)?.cdRule || "standard";
+      const c = calcAll(p, tds, cdRule);
       const record = {
         ...p,
         _tds: tds, _shortage: c.shortage, _halfKgQty: c.halfKgQty, _netQty: c.netQty,
         _netAmt1: c.netAmt1, _cdAmt: c.cdAmt, _netAmt: c.netAmt,
         _brokerageAmt: c.brokerageAmt, _finalAmt: c.finalAmt, _balance: c.balance
       };
+
       const ok = await upsertRecord(record, activeFY);
-      if (ok) {
-        saved++;
-        const i = finalRecords.findIndex(r => r.refNo.trim().toUpperCase() === record.refNo.trim().toUpperCase());
-        if (i >= 0) finalRecords[i] = record;
-      }
+      if (ok) saved++;
+
+      // Now add the computed record so subsequent rows see it
+      const mIdx = merged.findIndex(r => r.refNo.trim().toUpperCase() === record.refNo.trim().toUpperCase());
+      if (mIdx >= 0) merged[mIdx] = record; else merged.push(record);
+
+      const fIdx = finalRecords.findIndex(r => r.refNo.trim().toUpperCase() === record.refNo.trim().toUpperCase());
+      if (fIdx >= 0) finalRecords[fIdx] = record; else finalRecords.push(record);
     }
 
- // Recompute all bills of every party touched by this import (back-dated safety)
+    // Recompute all bills of every party touched by this import (back-dated safety)
     const affected = [...new Set(parsed.map(p => p.partyName).filter(Boolean))];
     const { ok: recOk, records: recomputed } = await recomputePartiesTDS(affected, finalRecords, claimRules, "all", activeFY);
     setRecords(recomputed);
@@ -2750,11 +2783,11 @@ const c = calcAll(p, tds, cdRule);
     const lines = pastedText.trim().split('\n');
     const out = [];
 
-    const num = (s) => {
-      const t = (s || "").trim();
-      if (t === "" || t === "0") return "";
-      return t;
-    };
+   const num = (s) => {
+    const t = (s || "").trim().replace(/,/g, '');   // ← add .replace(/,/g,'')
+    if (t === "" || t === "0") return "";
+    return t;
+};
     const text0 = (s) => {
       const t = (s || "").trim();
       return t === "0" ? "" : t;
@@ -3310,7 +3343,8 @@ const [activeFY, setActiveFY] = useState("2026-27");
 const [financialYears, setFinancialYears] = useState([]);  
 const [newFYStart, setNewFYStart] = useState("");
 const [navScrollWidth, setNavScrollWidth] = useState(0);
-  const [users, setUsers] = useState([]);
+const [recalcTdsFY, setRecalcTdsFY] = useState("2025-26");  
+const [users, setUsers] = useState([]);
   const [loginUsername, setLoginUsername] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [newUsername, setNewUsername] = useState("");
@@ -3721,6 +3755,56 @@ const handleEditToggleTab = (tab) => {
       : [...prev, tab]
   );
 };
+
+const handleBulkRecalcTDS = async (targetFY) => {
+  if (!targetFY) return;
+  if (
+    !confirm(
+      `Recalculate TDS for ALL parties in FY ${targetFY}?\n\nThis will recompute every bill's TDS against the full record set for that year. It may take a moment.`
+    )
+  )
+    return;
+
+  showToast(`Loading FY ${targetFY} records…`);
+  const fyRecords = await loadRecords(targetFY);
+  if (fyRecords.length === 0) {
+    showToast(`No records found for FY ${targetFY}`, "error");
+    return;
+  }
+
+  const allParties = [
+    ...new Set(
+      fyRecords.map((r) => (r.partyName || "").trim()).filter(Boolean)
+    ),
+  ];
+
+  showToast(
+    `Recomputing TDS for ${allParties.length} parties, ${fyRecords.length} bills…`
+  );
+
+  const { ok, records: updated } = await recomputePartiesTDS(
+    allParties,
+    fyRecords,
+    claimRules,
+    "all",
+    targetFY
+  );
+
+  if (!ok) {
+    showToast("TDS recalculation failed — check connection", "error");
+    return;
+  }
+
+  // Only overwrite current view if we are on the same FY
+  if (activeFY === targetFY) {
+    setRecords(updated);
+  }
+
+  showToast(
+    `✓ Recalculated TDS for ${fyRecords.length} bills in FY ${targetFY}`
+  );
+};
+
 
 // BANKING STATES
 const [bankingData, setBankingData] = useState({ HDFC: [], SBI: [], VASB: [] });
@@ -5856,6 +5940,80 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
 {view === "users" && currentUser.role === "Admin" && (
   <div>
     <h2 style={{ fontSize:20, fontWeight:800, color:"#f1f5f9", marginBottom:20 }}>USER MANAGEMENT</h2>
+    
+    {currentUser.role === "Admin" && (
+  <div
+    style={{
+      marginBottom: 24,
+      padding: "16px 18px",
+      background: "#151b2a",
+      border: "1px solid #1e2a3a",
+      borderRadius: 10,
+    }}
+  >
+    <div
+      style={{
+        fontSize: 13,
+        fontWeight: 700,
+        color: "#f59e0b",
+        marginBottom: 12,
+      }}
+    >
+      🧾 Bulk TDS Recalculation
+    </div>
+    <div
+      style={{
+        display: "flex",
+        gap: 10,
+        alignItems: "center",
+        flexWrap: "wrap",
+      }}
+    >
+      <select
+        value={recalcTdsFY}
+        onChange={(e) => setRecalcTdsFY(e.target.value)}
+        style={{
+          background: "#0f1117",
+          border: "1px solid #1e2a3a",
+          borderRadius: 8,
+          padding: "8px 10px",
+          color: "#e2e8f0",
+          fontSize: 13,
+          outline: "none",
+        }}
+      >
+        {financialYears.map((fy) => (
+          <option key={fy.fy} value={fy.fy}>
+            {fy.fy}
+          </option>
+        ))}
+      </select>
+      <button
+        onClick={() => handleBulkRecalcTDS(recalcTdsFY)}
+        style={{
+          background: "#f59e0b",
+          border: "none",
+          borderRadius: 8,
+          padding: "9px 18px",
+          color: "#0f1117",
+          fontWeight: 700,
+          fontSize: 13,
+          cursor: "pointer",
+        }}
+      >
+        Recalculate TDS
+      </button>
+    </div>
+    <div
+      style={{ fontSize: 11, color: "#64748b", marginTop: 10, lineHeight: 1.5 }}
+    >
+      Use this after bulk imports, party renames, or claim-rule changes. It
+      reloads the selected FY’s records, recomputes TDS for every party, and
+      persists the results. If the selected FY is your current view, the table
+      refreshes automatically.
+    </div>
+  </div>
+)}
     
     <div style={{ marginBottom:20, padding:"16px 18px", background:"#151b2a", border:"1px solid #2a3a50", borderRadius:10, display:"flex", alignItems:"center", gap:14, flexWrap:"wrap" }}>
                 <div style={{ flex:1, minWidth:200 }}>
