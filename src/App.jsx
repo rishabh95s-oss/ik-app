@@ -4368,19 +4368,109 @@ const handlePasteBankData = async (bank) => {
       }
     }
 
+    /* ═══════════════════════════════════════════════════════════════
+       BOUNDARY DATE: SMART MERGE
+       ═══════════════════════════════════════════════════════════════ */
     if (boundaryDate) {
       const dayRows = existing.filter(t => toComparable(t.date) === pasteMin).length;
       const linkedCount = await countLinkedOnDate(bank, boundaryDate);
+
+      const fp = (t) => {
+        const w = parseFloat(t.withdrawalAmt) || 0;
+        const d = parseFloat(t.depositAmt) || 0;
+        const chq = String(t.chqRef || "").trim();
+        const nar = String(t.narration || "").trim().slice(0, 30);
+        return `${chq}::${w}::${d}::${nar}`;
+      };
+
+      const existingBoundary = existing.filter(t => toComparable(t.date) === pasteMin);
+
+      // Index LINKED existing rows by fingerprint
+      const linkedByFP = new Map();
+      existingBoundary.forEach(t => {
+        if (t.linkedRefNo || t.partyName) {
+          const key = fp(t);
+          const arr = linkedByFP.get(key) || [];
+          arr.push(t);
+          linkedByFP.set(key, arr);
+        }
+      });
+
+      const parsedBoundary = parsed.filter(t => toComparable(t.date) === pasteMin);
+      const parsedNonBoundary = parsed.filter(t => toComparable(t.date) !== pasteMin);
+
+      const mergedBoundary = [];
+      const consumedLinkedIds = new Set();
+
+      // Walk pasted statement order
+      parsedBoundary.forEach((t, idx) => {
+        const key = fp(t);
+        const candidates = linkedByFP.get(key) || [];
+        const match = candidates.find(c => !consumedLinkedIds.has(c.id));
+
+        if (match) {
+          mergedBoundary.push(match);
+          consumedLinkedIds.add(match.id);
+        } else {
+          mergedBoundary.push({
+            ...t,
+            bank,
+            createdAt: new Date(Date.now() + idx).toISOString()
+          });
+        }
+      });
+
+      // Safety net: append linked rows NOT found in the paste
+      existingBoundary.forEach(t => {
+        if ((t.linkedRefNo || t.partyName) && !consumedLinkedIds.has(t.id)) {
+          mergedBoundary.push(t);
+        }
+      });
+
+      /* ═══════ FIX: re-stamp createdAt so sort preserves statement order ═══════ */
+      mergedBoundary.forEach((t, idx) => {
+        t.createdAt = new Date(Date.now() + idx).toISOString();
+      });
+
       const msg = linkedCount > 0
-        ? `Re-importing ${boundaryDate} will delete its ${dayRows} stored row(s), including ${linkedCount} LINKED transaction(s). Those links will be lost.\n\nContinue?`
+        ? `Re-importing ${boundaryDate}: ${dayRows} row(s), ${linkedCount} linked.\n\nLinked rows will be preserved; new rows will be added.\n\nContinue?`
         : `Re-importing ${boundaryDate} will replace its ${dayRows} stored row(s).\n\nContinue?`;
+
       if (!confirm(msg)) return;
 
       const okDel = await deleteBankTransactionsByDate(bank, boundaryDate);
       if (!okDel) { showToast("Failed to clear boundary day — check connection", "error"); return; }
+
+      const nonBoundary = parsedNonBoundary.map((t, i) => ({
+        ...t,
+        bank,
+        createdAt: new Date(Date.now() + i + mergedBoundary.length).toISOString()
+      }));
+
+      const allToSave = [...mergedBoundary, ...nonBoundary];
+      const ok = await upsertBankTransactions(allToSave);
+      if (!ok) { showToast("Failed to save — check connection", "error"); return; }
+
+      setBankingData(prev => {
+        const kept = (prev[bank] || []).filter(t => toComparable(t.date) !== pasteMin);
+        const combined = [...kept, ...allToSave].sort((a, b) => {
+          const da = toComparable(a.date), db = toComparable(b.date);
+          if (da !== db) return da.localeCompare(db);
+          return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+        });
+        return { ...prev, [bank]: combined };
+      });
+
+      showToast(
+        `${allToSave.length} transactions imported (${boundaryDate} merged, ${linkedCount} link(s) preserved)`
+      );
+      return;
     }
   }
 
+  /* ═══════════════════════════════════════════════════════════════
+     NORMAL IMPORT (no boundary overlap)
+     ═══════════════════════════════════════════════════════════════ */
   const base = Date.now();
   const withBank = parsed.map((t, i) => ({ ...t, bank, createdAt: new Date(base + i).toISOString() }));
 
@@ -4388,52 +4478,15 @@ const handlePasteBankData = async (bank) => {
   if (!ok) { showToast("Failed to save — check connection", "error"); return; }
 
   setBankingData(prev => {
-    const kept = boundaryDate
-      ? (prev[bank] || []).filter(t => toComparable(t.date) !== pasteMin)
-      : (prev[bank] || []);
-
-    const combined = [...kept, ...withBank].sort((a, b) => {
+    const combined = [...(prev[bank] || []), ...withBank].sort((a, b) => {
       const da = toComparable(a.date), db = toComparable(b.date);
       if (da !== db) return da.localeCompare(db);
       return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
     });
-
     return { ...prev, [bank]: combined };
   });
 
-  showToast(boundaryDate
-    ? `${withBank.length} transactions imported (${boundaryDate} replaced)`
-    : `${withBank.length} transactions imported`);
-};
-// Link bank transaction to Ref No
-
-const handleLinkBankTransaction = async (bankTransId, refNo, partyName) => {
-  if (!refNo || !partyName) {
-    showToast("Enter Ref No and Party Name", "error");
-    return;
-  }
-
-  const updatedTrans = bankingData[selectedBankTab].find(t => t.id === bankTransId);
-  if (!updatedTrans) return;
-
- const linked = { ...updatedTrans, linkedRefNo: refNo, linkedFy: activeFY, partyName };
-  
-  const ok = await updateBankTransaction(linked);
-  if (!ok) { showToast("Failed to save — check connection", "error"); return; }
-
-  setBankingData(prev => ({
-    ...prev,
-    [selectedBankTab]: prev[selectedBankTab].map(t =>
-      t.id === bankTransId ? linked : t
-    )
-  }));
-
-  setLinkedTransactions(prev => ({
-    ...prev,
-    [refNo]: { bank: selectedBankTab, bankTransId, date: new Date().toISOString() }
-  }));
-
-  showToast(`Linked to Ref No ${refNo}`);
+  showToast(`${withBank.length} transactions imported`);
 };
 
 // Delete bank transaction
