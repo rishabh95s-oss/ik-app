@@ -1685,10 +1685,17 @@ function AutoComplete({ name, value, onChange, options, placeholder, style }) {
   // Keep the displayed text in sync with the committed value (e.g. on edit-load / clear)
   useEffect(() => { setQ(value || ""); }, [value]);
 
+  // Alphabetical (case-insensitive), capped at 50 with a hint if truncated
+  const sortedOptions = useMemo(
+    () => [...options].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })),
+    [options]
+  );
+
   const filtered = useMemo(() => {
-    if (!q) return options.slice(0, 10);
-    return options.filter(o => o.toLowerCase().includes(q.toLowerCase())).slice(0, 10);
-  }, [q, options]);
+    if (!q) return { list: sortedOptions.slice(0, 50), hidden: Math.max(0, sortedOptions.length - 50) };
+    const matches = sortedOptions.filter(o => o.toLowerCase().includes(q.toLowerCase()));
+    return { list: matches.slice(0, 50), hidden: Math.max(0, matches.length - 50) };
+  }, [q, sortedOptions]);
 
   // Commit the typed text only if it exactly matches a list option (case-insensitive);
   // empty commits as "" (valid for optional fields); otherwise revert to last committed value.
@@ -1724,13 +1731,13 @@ function AutoComplete({ name, value, onChange, options, placeholder, style }) {
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  });   // ← added empty dependency array
+  });
 
   return (
-    <div ref={ref} style={{ position:"relative" }}>
+    <div ref={ref} style={{ position: "relative" }}>
       <input
         value={q}
-        onChange={e => { setQ(e.target.value); setOpen(true); }}  // typing filters only — does NOT commit
+        onChange={e => { setQ(e.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
         onBlur={commitOrRevert}
         onKeyDown={e => {
@@ -1741,16 +1748,21 @@ function AutoComplete({ name, value, onChange, options, placeholder, style }) {
         style={style}
         autoComplete="off"
       />
-      {open && filtered.length > 0 && (
+      {open && filtered.list.length > 0 && (
         <div style={{ position:"absolute", top:"100%", left:0, right:0, background:"#1a2236", border:"1px solid #2a3a50", borderRadius:8, zIndex:1000, maxHeight:200, overflowY:"auto", boxShadow:"0 8px 24px rgba(0,0,0,.5)" }}>
-          {filtered.map(o => (
-  <div key={o} onMouseDown={() => pick(o)}
-  style={{ padding:"9px 14px", cursor:"pointer", fontSize:13, color:"#cbd5e1", borderBottom:"1px solid #0f1117" }}
-  onMouseEnter={e => e.target.style.background="#2a3a50"}
-  onMouseLeave={e => e.target.style.background="transparent"}>
-  {o}
-</div>
+          {filtered.list.map(o => (
+            <div key={o} onMouseDown={() => pick(o)}
+              style={{ padding:"9px 14px", cursor:"pointer", fontSize:13, color:"#cbd5e1", borderBottom:"1px solid #0f1117" }}
+              onMouseEnter={e => e.target.style.background="#2a3a50"}
+              onMouseLeave={e => e.target.style.background="transparent"}>
+              {o}
+            </div>
           ))}
+          {filtered.hidden > 0 && (
+            <div style={{ padding:"8px 14px", fontSize:11, color:"#64748b", textAlign:"center", background:"#151b2a" }}>
+              +{filtered.hidden} more — keep typing to narrow down
+            </div>
+          )}
         </div>
       )}
     </div>
