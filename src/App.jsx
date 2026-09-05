@@ -6847,8 +6847,17 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
           const m = s.match(/^(\d+)(.*)$/);
           return m ? { num: parseInt(m[1], 10), suf: m[2].toUpperCase() } : { num: Infinity, suf: s.toUpperCase() };
         };
-        const pmtFiltered = filtered
-          .filter(r => !reconcileSearch || r.partyName.toLowerCase().includes(reconcileSearch.toLowerCase()))
+        const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const q = norm(reconcileSearch);
+
+const pmtFiltered = filtered
+  .filter(r => {
+    if (!reconcileSearch) return true;
+    return norm(r.partyName).includes(q)
+        || norm(r.refNo).includes(q)
+        || String(Math.round(parseFloat(r._finalAmt) || 0)).includes(reconcileSearch)
+        || String(Math.round(parseFloat(r._balance) || 0)).includes(reconcileSearch);
+  })
           .sort((a, b) => {
             const pa = parseRefPmt(a.refNo), pb = parseRefPmt(b.refNo);
             return pa.num !== pb.num ? pa.num - pb.num : pa.suf.localeCompare(pb.suf);
