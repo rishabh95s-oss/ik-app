@@ -219,45 +219,69 @@ function TDSReconcileTab({ salesWorkingData, activeFY, showToast, claimRules = [
     return s;
   };
 
-  // ─── Sync parsed IT entries with Supabase ───
-  const syncITEntries = async (parsedEntries, fy) => {
-    const existing = await loadITEntries(fy);
-    const byDeductor = {};
-    parsedEntries.forEach(e => {
-      const key = e.deductorName.trim().toLowerCase();
-      if (!byDeductor[key]) byDeductor[key] = [];
-      byDeductor[key].push(e);
-    });
-
-    let totalAdded = 0, totalSkipped = 0, totalRemoved = 0;
-    const makeKey = (date, tds, gross) => `${date}|${Math.round(parseFloat(tds)||0)}|${Math.round(parseFloat(gross)||0)}`;
-
-    for (const [deductorKey, newRows] of Object.entries(byDeductor)) {
-      const dbRows = existing.filter(r => (r.deductor_name || "").trim().toLowerCase() === deductorKey);
-      const dbKeySet = new Set(dbRows.map(r => makeKey(r.date, r.tds_amount, r.gross_amount)));
-      const newKeySet = new Set(newRows.map(r => makeKey(r.date, r.tdsAmount, r.grossAmount)));
-
-      for (const row of newRows) {
-        if (!dbKeySet.has(makeKey(row.date, row.tdsAmount, row.grossAmount))) {
-          const ok = await upsertITEntry({ ...row, fy });
-          if (ok) totalAdded++;
-        }
-      }
-
-      for (const row of dbRows) {
-        if (!newKeySet.has(makeKey(row.date, row.tds_amount, row.gross_amount))) {
-          const ok = await deleteITEntry(row.id);
-          if (ok) totalRemoved++;
-        }
-      }
-
-      totalSkipped += newRows.filter(r => dbKeySet.has(makeKey(r.date, r.tdsAmount, r.grossAmount))).length;
-    }
-
-    return { added: totalAdded, skipped: totalSkipped, removed: totalRemoved };
+    const getFYFromDate = (dateStr) => {
+    if (!dateStr) return activeFY;
+    const [y, m] = dateStr.split('-').map(Number);
+    if (!y || !m) return activeFY;
+    const startYear = m >= 4 ? y : y - 1;
+    return `${startYear}-${String((startYear + 1) % 100).padStart(2, '0')}`;
   };
 
-  // ─── File handler — CSV upload with DB sync ───
+  // ─── Sync parsed IT entries with Supabase (auto-FY) ───
+  const syncITEntries = async (parsedEntries) => {
+    const byFY = {};
+    parsedEntries.forEach(e => {
+      const fy = getFYFromDate(e.date);
+      if (!byFY[fy]) byFY[fy] = [];
+      byFY[fy].push(e);
+    });
+
+    const summary = {};
+
+    for (const [fy, rows] of Object.entries(byFY)) {
+      const existing = await loadITEntries(fy);
+      const byDeductor = {};
+      rows.forEach(e => {
+        const key = e.deductorName.trim().toLowerCase();
+        if (!byDeductor[key]) byDeductor[key] = [];
+        byDeductor[key].push(e);
+      });
+
+      let added = 0, skipped = 0, removed = 0;
+      const makeKey = (date, tds, gross) =>
+        `${date}|${Math.round(parseFloat(tds) || 0)}|${Math.round(parseFloat(gross) || 0)}`;
+
+      for (const [deductorKey, newRows] of Object.entries(byDeductor)) {
+        const dbRows = existing.filter(r =>
+          (r.deductor_name || "").trim().toLowerCase() === deductorKey
+        );
+        const dbKeySet = new Set(dbRows.map(r => makeKey(r.date, r.tds_amount, r.gross_amount)));
+        const newKeySet = new Set(newRows.map(r => makeKey(r.date, r.tdsAmount, r.grossAmount)));
+
+        for (const row of newRows) {
+          if (!dbKeySet.has(makeKey(row.date, row.tdsAmount, row.grossAmount))) {
+            const ok = await upsertITEntry({ ...row, fy });
+            if (ok) added++;
+          }
+        }
+
+        for (const row of dbRows) {
+          if (!newKeySet.has(makeKey(row.date, row.tds_amount, row.gross_amount))) {
+            const ok = await deleteITEntry(row.id);
+            if (ok) removed++;
+          }
+        }
+
+        skipped += newRows.filter(r => dbKeySet.has(makeKey(r.date, r.tdsAmount, r.grossAmount))).length;
+      }
+
+      summary[fy] = { added, skipped, removed };
+    }
+
+    return summary;
+  };
+
+  // ─── File handler — CSV upload with auto-FY sync ───
   const handleFileUpload = async (e) => {
     const files = Array.from(e.target.files || []);
     const csvFiles = files.filter(f => f.name.toLowerCase().endsWith('.csv'));
@@ -280,7 +304,7 @@ function TDSReconcileTab({ salesWorkingData, activeFY, showToast, claimRules = [
         return;
       }
 
-      const summary = await syncITEntries(allParsed, activeFY);
+      const summary = await syncITEntries(allParsed);
 
       const fresh = await loadITEntries(activeFY);
       setItData(fresh.map(r => ({
@@ -296,8 +320,11 @@ function TDSReconcileTab({ salesWorkingData, activeFY, showToast, claimRules = [
         _sourcePath: r.source_path || `db-${r.id}`
       })));
 
-      setFileName(`${csvFiles.length} file(s) — +${summary.added} new, ~${summary.skipped} kept, −${summary.removed} removed`);
-      showToast(`Synced IT entries: +${summary.added}, ~${summary.skipped}, −${summary.removed}`);
+      const parts = Object.entries(summary).map(
+        ([fy, s]) => `${fy}: +${s.added}/~${s.skipped}/−${s.removed}`
+      );
+      setFileName(`${csvFiles.length} file(s) parsed`);
+      showToast(`Synced: ${parts.join(' | ')}`);
     } catch (err) {
       showToast("Failed to sync: " + (err.message || "Unknown error"), "error");
       console.error(err);
