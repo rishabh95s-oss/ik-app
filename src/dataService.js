@@ -1230,3 +1230,55 @@ const CONFLICT = {
   }
   return results;
 }
+export async function loadPartyDeductorMap() {
+  const { data } = await supabase.from('party_deductor_map').select('book_party, deductor_name');
+  const map = {};
+  (data || []).forEach(r => { map[r.book_party.toLowerCase()] = r.deductor_name; });
+  return map;
+}
+
+export async function upsertPartyDeductorMap(bookParty, deductorName) {
+  const { error } = await supabase.from('party_deductor_map')
+    .upsert({ book_party: bookParty.trim(), deductor_name: deductorName.trim() },
+            { onConflict: 'book_party' });
+  return !error;
+}
+
+export async function loadITEntries(fy) {
+  const { data, error } = await supabase
+    .from('tds_it_entries')
+    .select('*')
+    .eq('fy', fy)
+    .order('date', { ascending: true });
+  if (error) { console.error(error); return []; }
+  return data || [];
+}
+
+export async function upsertITEntry(entry) {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return false;
+  const { error } = await supabase
+    .from('tds_it_entries')
+    .upsert({
+      user_id: user.id,
+      fy: entry.fy,
+      deductor_name: entry.deductorName,
+      deductor_pan: entry.deductorPan || "",
+      section_code: entry.sectionCode || "",
+      date: entry.date,
+      gross_amount: entry.grossAmount || 0,
+      tds_amount: entry.tdsAmount || 0,
+      status: entry.status || "",
+      source_path: entry._sourcePath || ""
+    }, {
+      onConflict: ['user_id', 'fy', 'deductor_name', 'date', 'tds_amount', 'gross_amount']
+    });
+  if (error) { console.error("upsertITEntry error:", error); return false; }
+  return true;
+}
+
+export async function deleteITEntry(id) {
+  const { error } = await supabase.from('tds_it_entries').delete().eq('id', id);
+  if (error) { console.error(error); return false; }
+  return true;
+}

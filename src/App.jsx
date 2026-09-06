@@ -1,8 +1,879 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { IMPORTED_DATA } from "./importedData.js";
-import { loadRecords, upsertRecord, deleteRecord, loadSalesFlash, replaceSalesFlash, loadPurchaseFlash, replacePurchaseFlash, loadSalesWorking, upsertWorkingRow, upsertWorkingBatch, deleteWorkingRow, loadParties, addParty, deleteParty, loadBrokers, addBroker, deleteBroker, loadDeliveries, addDelivery, deleteDelivery, loadClaimRules, upsertClaimRule, deleteClaimRule, loadAppUsers, upsertAppUser, deleteAppUser, loadBankTransactions, upsertBankTransactions, updateBankTransaction, deleteBankTransaction, renamePurchaseParty, renamePurchaseDeliveryAt, renameSalesWorkingParty, renameClaimRuleParty, countPurchasesByParty, countPurchasesByDeliveryAt, countSalesWorkingByParty, countClaimRulesByParty, loadPmtLinkedSlots, upsertPmtLinkedSlot, deletePmtLinkedSlot, loadPartyPans, updatePartyPan, updatePartyPanVerified, loadFinancialYears, createFinancialYear, loadLoanParties, addLoanParty, deleteLoanParty, updateLoanPartyPan, updateLoanPartyPanVerified, loadLoanBrokers, addLoanBroker, deleteLoanBroker, updateLoanBrokerPan, updateLoanBrokerPanVerified, createLoan, addLoanInterestEvent, addLoanBrokerageAccrual, loadLoanInterestEvents, loadActiveFixedLoans, updateLoanDueDate, loadLoanBrokerageAccruals, loadLoanBrokeragePayments, addLoanBrokeragePayment, deleteLoanTerm, loadLoansWithTerms, settleNonFixedLoan, deleteNonFixedLoan, updateLoanRates , updateLoanPartyForm15h, loadBanks, addBank, deleteBank,  loadIgnoredSalesParties, addIgnoredSalesParty, deleteIgnoredSalesParty, deleteBankTransactionsByDate, countLinkedOnDate, exportFullBackup, importFullBackup } from "./dataService.js";
+import { loadRecords, upsertRecord, deleteRecord, loadSalesFlash, replaceSalesFlash, loadPurchaseFlash, replacePurchaseFlash, loadSalesWorking, upsertWorkingRow, upsertWorkingBatch, deleteWorkingRow, loadParties, addParty, deleteParty, loadBrokers, addBroker, deleteBroker, loadDeliveries, addDelivery, deleteDelivery, loadClaimRules, upsertClaimRule, deleteClaimRule, loadAppUsers, upsertAppUser, deleteAppUser, loadBankTransactions, upsertBankTransactions, updateBankTransaction, deleteBankTransaction, renamePurchaseParty, renamePurchaseDeliveryAt, renameSalesWorkingParty, renameClaimRuleParty, countPurchasesByParty, countPurchasesByDeliveryAt, countSalesWorkingByParty, countClaimRulesByParty, loadPmtLinkedSlots, upsertPmtLinkedSlot, deletePmtLinkedSlot, loadPartyPans, updatePartyPan, updatePartyPanVerified, loadFinancialYears, createFinancialYear, loadLoanParties, addLoanParty, deleteLoanParty, updateLoanPartyPan, updateLoanPartyPanVerified, loadLoanBrokers, addLoanBroker, deleteLoanBroker, updateLoanBrokerPan, updateLoanBrokerPanVerified, createLoan, addLoanInterestEvent, addLoanBrokerageAccrual, loadLoanInterestEvents, loadActiveFixedLoans, updateLoanDueDate, loadLoanBrokerageAccruals, loadLoanBrokeragePayments, addLoanBrokeragePayment, deleteLoanTerm, loadLoansWithTerms, settleNonFixedLoan, deleteNonFixedLoan, updateLoanRates , updateLoanPartyForm15h, loadBanks, addBank, deleteBank,  loadIgnoredSalesParties, addIgnoredSalesParty, deleteIgnoredSalesParty, deleteBankTransactionsByDate, countLinkedOnDate, exportFullBackup, importFullBackup,loadPartyDeductorMap,upsertPartyDeductorMap, loadITEntries, upsertITEntry, deleteITEntry } from "./dataService.js";
 import { TableVirtuoso, Virtuoso } from "react-virtuoso";
 import { supabase } from './supabaseClient.js';
+import * as zip from "@zip.js/zip.js";
+
+function TDSReconcileTab({ salesWorkingData, activeFY, showToast, claimRules = [] }) {
+  const [itData, setItData] = useState([]);
+  const [fileName, setFileName] = useState("");
+  const [viewMode, setViewMode] = useState("summary");
+  const [search, setSearch] = useState("");
+  const [ssParty, setSsParty] = useState("");
+  const [partyMap, setPartyMap] = useState({});
+
+  // Load and normalize party map (keys must be lowercase)
+  useEffect(() => {
+    loadPartyDeductorMap().then(raw => {
+      const normalized = {};
+      Object.entries(raw || {}).forEach(([k, v]) => {
+        normalized[k.trim().toLowerCase()] = v;
+      });
+      setPartyMap(normalized);
+    });
+  }, []);
+
+  // Load persisted IT entries from Supabase on mount / FY change
+  useEffect(() => {
+    if (!activeFY) return;
+    loadITEntries(activeFY).then(raw => {
+      setItData(raw.map(r => ({
+        id: r.id,
+        deductorName: r.deductor_name,
+        deductorPan: r.deductor_pan,
+        sectionCode: r.section_code,
+        dateRaw: r.date,
+        grossAmount: r.gross_amount,
+        tdsAmount: r.tds_amount,
+        status: r.status,
+        date: r.date,
+        _sourcePath: r.source_path || `db-${r.id}`
+      })));
+    });
+  }, [activeFY]);
+
+  const inp = { background:"#0f1117", border:"1px solid #1e2a3a", borderRadius:8, padding:"9px 12px", color:"#e2e8f0", fontSize:13, outline:"none", width:"100%" };
+  const lbl = { fontSize:11, fontWeight:600, color:"#64748b", letterSpacing:"0.3px", display:"block", marginBottom:5 };
+  const sec = { background:"#151b2a", border:"1px solid #1e2a3a", borderRadius:14, padding:"20px 22px", marginBottom:20 };
+  const stitle = { fontSize:11, fontWeight:700, letterSpacing:"1px", textTransform:"uppercase", color:"#f59e0b", marginBottom:16 };
+
+  // ─── Book TDS from sales working ───
+  const bookTDS = useMemo(() => {
+    return salesWorkingData
+      .filter(r => parseFloat(r.tdsReceived) > 0)
+      .map(r => {
+        const calc = calculateSalesFields(r);
+        const rule = claimRules.find(cr => cr.partyName === r.partyName);
+        const tdsBase = rule?.tdsBase || "gross";
+
+        const rw    = parseFloat(r.receivedWeight) || parseFloat(r.qty) || 0;
+        const rate  = parseFloat(r.rate) || 0;
+        const claim = parseFloat(r.claim) || 0;
+        const cd    = parseFloat(r.cd) || calc.cd || 0;
+
+        const grossAmt = tdsBase === "net"
+          ? Math.max(0, Math.round(rw * rate - claim - cd))
+          : Math.round(rw * rate);
+
+        return {
+          id: r.id,
+          refNo: r.refNo,
+          partyName: (r.partyName || "").trim(),
+          date: r.date,
+          grossAmt,
+          netAmt: calc.netAmt,
+          tds: parseFloat(r.tdsReceived) || 0,
+          rate, qty: parseFloat(r.qty) || 0, receivedWeight: rw,
+        };
+      });
+  }, [salesWorkingData, claimRules]);
+
+  // ─── Robust date parser for comparison ───
+  const parseDateForCompare = (d) => {
+    if (!d) return null;
+    const s = String(d).trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(s);
+    const m = s.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    if (m) return new Date(`${m[3]}-${m[2]}-${m[1]}`);
+    return new Date(s);
+  };
+
+  // ─── CSV Parser for Income Tax Portal exports ───
+  const parseITCSV = (csvText, filePrefix) => {
+    const results = [];
+
+    const splitLine = (line) => {
+      const result = [];
+      let current = '';
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        const nextChar = line[i + 1];
+        if (char === '"') {
+          if (inQuotes && nextChar === '"') { current += '"'; i++; }
+          else { inQuotes = !inQuotes; }
+        } else if (char === ',' && !inQuotes) {
+          result.push(current.trim());
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      result.push(current.trim());
+      return result;
+    };
+
+    const text = csvText.replace(/^\uFEFF/, '');
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    if (lines.length < 2) return results;
+
+    let headerIdx = -1;
+    for (let i = 0; i < Math.min(lines.length, 10); i++) {
+      const low = lines[i].toLowerCase();
+      if (low.includes('information category') || low.includes('s.no') ||
+          low.includes('deductor') || low.includes('date of payment') ||
+          low.includes('information source') || low.includes('tds deducted')) {
+        headerIdx = i;
+        break;
+      }
+    }
+    if (headerIdx === -1) headerIdx = 0;
+
+    const headers = splitLine(lines[headerIdx]).map(h =>
+      h.toLowerCase().replace(/^"|"$/g, '').replace(/\./g, '').trim()
+    );
+
+    const findCol = (...names) => {
+      for (const name of names) {
+        const exact = headers.findIndex(h => h === name.toLowerCase());
+        if (exact >= 0) return exact;
+      }
+      for (const name of names) {
+        const partial = headers.findIndex(h => h.includes(name.toLowerCase()));
+        if (partial >= 0) return partial;
+      }
+      return -1;
+    };
+
+    const cName    = findCol('information source', 'deductor', 'party', 'buyer', 'name');
+    const cPan     = findCol('deductor pan', 'pan', 'deductor_pan');
+    const cSection = findCol('information code', 'section', 'section code');
+    const cDate    = findCol('date of payment', 'date of credit', 'date');
+    const cGross   = findCol('amount paid/credited - reported', 'amount paid', 'gross', 'payment', 'amount paid/credited');
+    const cTds     = findCol('tds deducted', 'tds deposited', 'tds');
+    const cStatus  = findCol('status');
+
+    if (cName < 0 || cTds < 0) {
+      console.warn("TDS CSV: critical columns missing. Headers:", headers);
+    }
+
+    const unq = (s) => (s || "").replace(/^"|"$/g, '').trim();
+    const num = (s) => parseFloat(unq(s).replace(/,/g, '')) || 0;
+
+    for (let i = headerIdx + 1; i < lines.length; i++) {
+      const cells = splitLine(lines[i]);
+      if (cells.length < 3) continue;
+
+      const firstCell = unq(cells[0]).toLowerCase();
+      if (firstCell === 's.no' || firstCell.includes('information category') || firstCell.startsWith('note')) continue;
+
+      let rawName = unq(cells[cName]);
+      let pan = "";
+
+      if (cPan >= 0) {
+        pan = unq(cells[cPan]);
+      }
+      if (!pan) {
+        const panMatch = rawName.match(/^(.*?)\s*\(([A-Z]{5}[0-9]{4}[A-Z])\)\s*$/);
+        if (panMatch) {
+          rawName = panMatch[1].trim();
+          pan = panMatch[2];
+        }
+      }
+
+      const entry = {
+        deductorName: rawName,
+        deductorPan: pan,
+        sectionCode: unq(cells[cSection]),
+        dateRaw: unq(cells[cDate]),
+        grossAmount: num(cells[cGross]),
+        tdsAmount: num(cells[cTds]),
+        status: unq(cells[cStatus]),
+        date: normalizeITDate(unq(cells[cDate])),
+        _sourcePath: `${filePrefix}[csv-${i}]`
+      };
+
+           const statusNorm = (entry.status || "").toLowerCase().trim();
+      const isActive = ["active", "booked"].some(s => statusNorm.includes(s));
+
+      if ((entry.deductorName || entry.deductorPan || entry.tdsAmount > 0) && isActive) {
+        results.push(entry);
+      }
+    }
+    return results;
+  };
+
+  const normalizeITDate = (raw) => {
+    if (!raw) return "";
+    const s = String(raw).trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    const m1 = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    if (m1) return `${m1[3]}-${m1[2].padStart(2,'0')}-${m1[1].padStart(2,'0')}`;
+    const months = { jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, oct:10, nov:11, dec:12 };
+    const m2 = s.match(/^(\d{1,2})-([a-zA-Z]{3})-(\d{4})$/);
+    if (m2) {
+      const mm = months[m2[2].toLowerCase()];
+      if (mm) return `${m2[3]}-${String(mm).padStart(2,'0')}-${m2[1].padStart(2,'0')}`;
+    }
+    return s;
+  };
+
+  // ─── Sync parsed IT entries with Supabase ───
+  const syncITEntries = async (parsedEntries, fy) => {
+    const existing = await loadITEntries(fy);
+    const byDeductor = {};
+    parsedEntries.forEach(e => {
+      const key = e.deductorName.trim().toLowerCase();
+      if (!byDeductor[key]) byDeductor[key] = [];
+      byDeductor[key].push(e);
+    });
+
+    let totalAdded = 0, totalSkipped = 0, totalRemoved = 0;
+    const makeKey = (date, tds, gross) => `${date}|${Math.round(parseFloat(tds)||0)}|${Math.round(parseFloat(gross)||0)}`;
+
+    for (const [deductorKey, newRows] of Object.entries(byDeductor)) {
+      const dbRows = existing.filter(r => (r.deductor_name || "").trim().toLowerCase() === deductorKey);
+      const dbKeySet = new Set(dbRows.map(r => makeKey(r.date, r.tds_amount, r.gross_amount)));
+      const newKeySet = new Set(newRows.map(r => makeKey(r.date, r.tdsAmount, r.grossAmount)));
+
+      for (const row of newRows) {
+        if (!dbKeySet.has(makeKey(row.date, row.tdsAmount, row.grossAmount))) {
+          const ok = await upsertITEntry({ ...row, fy });
+          if (ok) totalAdded++;
+        }
+      }
+
+      for (const row of dbRows) {
+        if (!newKeySet.has(makeKey(row.date, row.tds_amount, row.gross_amount))) {
+          const ok = await deleteITEntry(row.id);
+          if (ok) totalRemoved++;
+        }
+      }
+
+      totalSkipped += newRows.filter(r => dbKeySet.has(makeKey(r.date, r.tdsAmount, r.grossAmount))).length;
+    }
+
+    return { added: totalAdded, skipped: totalSkipped, removed: totalRemoved };
+  };
+
+  // ─── File handler — CSV upload with DB sync ───
+  const handleFileUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
+    const csvFiles = files.filter(f => f.name.toLowerCase().endsWith('.csv'));
+    if (csvFiles.length === 0) {
+      showToast("Please select .csv files only", "error");
+      return;
+    }
+
+    try {
+      let allParsed = [];
+      for (let idx = 0; idx < csvFiles.length; idx++) {
+        const file = csvFiles[idx];
+        const csvText = await file.text();
+        const parsed = parseITCSV(csvText, file.name);
+        allParsed.push(...parsed);
+      }
+
+      if (allParsed.length === 0) {
+        showToast("No TDS entries found in file(s). Check format.", "error");
+        return;
+      }
+
+      const summary = await syncITEntries(allParsed, activeFY);
+
+      const fresh = await loadITEntries(activeFY);
+      setItData(fresh.map(r => ({
+        id: r.id,
+        deductorName: r.deductor_name,
+        deductorPan: r.deductor_pan,
+        sectionCode: r.section_code,
+        dateRaw: r.date,
+        grossAmount: r.gross_amount,
+        tdsAmount: r.tds_amount,
+        status: r.status,
+        date: r.date,
+        _sourcePath: r.source_path || `db-${r.id}`
+      })));
+
+      setFileName(`${csvFiles.length} file(s) — +${summary.added} new, ~${summary.skipped} kept, −${summary.removed} removed`);
+      showToast(`Synced IT entries: +${summary.added}, ~${summary.skipped}, −${summary.removed}`);
+    } catch (err) {
+      showToast("Failed to sync: " + (err.message || "Unknown error"), "error");
+      console.error(err);
+    }
+    e.target.value = "";
+  };
+
+  // ─── Reconciliation logic ───
+  const getItKey = (it) => it.id || it._sourcePath;
+
+  const reconciliation = useMemo(() => {
+    const itMap = new Map();
+    itData.forEach(it => {
+      const key = it.deductorName.toLowerCase();
+      if (!itMap.has(key)) itMap.set(key, []);
+      itMap.get(key).push(it);
+    });
+
+    const matched = [];
+    const unmatchedBook = [];
+    const unmatchedIT = [];
+    const usedIT = new Set();
+
+    bookTDS.forEach(book => {
+      const mapped = partyMap[book.partyName.toLowerCase()];
+      const key = mapped ? mapped.toLowerCase() : book.partyName.toLowerCase();
+      const candidates = itMap.get(key) || [];
+      let bestMatch = null;
+      let bestScore = -1;
+
+      candidates.forEach((it) => {
+        if (usedIT.has(getItKey(it))) return;
+        let score = 0;
+        const tdsDiff = Math.abs(book.tds - it.tdsAmount);
+        const amtDiff = Math.abs(book.grossAmt - it.grossAmount);
+
+        if (tdsDiff < 1) score += 100;
+        else if (tdsDiff < 10) score += 50;
+        else score += Math.max(0, 30 - tdsDiff);
+
+        if (amtDiff < 1) score += 50;
+        else if (amtDiff < 100) score += 25;
+
+        if (book.date && it.date) {
+          const d1 = parseDateForCompare(book.date);
+          const d2 = parseDateForCompare(it.date);
+          if (d1 && d2 && !isNaN(d1) && !isNaN(d2)) {
+            const dayDiff = Math.abs(d1 - d2) / (1000 * 60 * 60 * 24);
+            if (dayDiff <= 1) score += 30;
+            else if (dayDiff <= 7) score += 15;
+            else if (dayDiff <= 30) score += 5;
+          }
+        }
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestMatch = { it, score };
+        }
+      });
+
+      if (bestMatch && bestMatch.score >= 80) {
+        usedIT.add(getItKey(bestMatch.it));
+        matched.push({
+          type: "matched",
+          book,
+          it: bestMatch.it,
+          score: bestMatch.score,
+          tdsDiff: book.tds - bestMatch.it.tdsAmount,
+          amtDiff: book.netAmt - bestMatch.it.grossAmount,
+        });
+      } else {
+        unmatchedBook.push({ type: "unmatched-book", book });
+      }
+    });
+
+    itData.forEach(it => {
+      if (!usedIT.has(getItKey(it))) {
+        unmatchedIT.push({ type: "unmatched-it", it });
+      }
+    });
+
+    return { matched, unmatchedBook, unmatchedIT };
+  }, [bookTDS, itData, partyMap]);
+
+  const { matched, unmatchedBook, unmatchedIT } = reconciliation;
+
+  const fmt = (n) => {
+    const v = parseFloat(n) || 0;
+    return v === 0 ? "0" : v.toLocaleString("en-IN", { maximumFractionDigits: 2 });
+  };
+  const fmtDate = (d) => {
+    if (!d) return "";
+    const p = String(d).split('-');
+    if (p.length === 3 && p[0].length === 4) return `${p[2]}-${p[1]}-${p[0]}`;
+    return d;
+  };
+
+  const totalBookTDS = bookTDS.reduce((s, b) => s + b.tds, 0);
+  const totalITTDS = itData.reduce((s, it) => s + it.tdsAmount, 0);
+  const totalMatchedBook = matched.reduce((s, m) => s + m.book.tds, 0);
+  const totalMatchedIT = matched.reduce((s, m) => s + m.it.tdsAmount, 0);
+
+  const filteredMatched = matched.filter(m =>
+    !search ||
+    m.book.partyName.toLowerCase().includes(search.toLowerCase()) ||
+    m.book.refNo.toLowerCase().includes(search.toLowerCase())
+  );
+  const filteredUnmatchedBook = unmatchedBook.filter(u =>
+    !search || u.book.partyName.toLowerCase().includes(search.toLowerCase())
+  );
+  const filteredUnmatchedIT = unmatchedIT.filter(u =>
+    !search || u.it.deductorName.toLowerCase().includes(search.toLowerCase())
+  );
+
+const sideBySideRows = useMemo(() => {
+  let rows;
+  if (!ssParty) {
+    rows = [];
+    matched.forEach(m => rows.push({ it: m.it, book: m.book, tdsDiff: m.tdsDiff, amtDiff: m.amtDiff, type: 'matched' }));
+    unmatchedBook.forEach(u => rows.push({ it: null, book: u.book, tdsDiff: null, amtDiff: null, type: 'unmatched-book' }));
+    unmatchedIT.forEach(u => rows.push({ it: u.it, book: null, tdsDiff: null, amtDiff: null, type: 'unmatched-it' }));
+  } else {
+    const itKey = ssParty.toLowerCase();
+    const m = matched.filter(x => x.it.deductorName.toLowerCase() === itKey);
+    const ui = unmatchedIT.filter(x => x.it.deductorName.toLowerCase() === itKey);
+
+    const mappedBookParties = new Set();
+    Object.entries(partyMap).forEach(([bookParty, mappedIT]) => {
+      if (mappedIT.toLowerCase() === itKey) mappedBookParties.add(bookParty);
+    });
+    mappedBookParties.add(itKey);
+
+    const ub = unmatchedBook.filter(x => mappedBookParties.has(x.book.partyName.toLowerCase()));
+
+    rows = [];
+    m.forEach(x => rows.push({ it: x.it, book: x.book, tdsDiff: x.tdsDiff, amtDiff: x.amtDiff, type: 'matched' }));
+    ub.forEach(x => rows.push({ it: null, book: x.book, tdsDiff: null, amtDiff: null, type: 'unmatched-book' }));
+    ui.forEach(x => rows.push({ it: x.it, book: null, tdsDiff: null, amtDiff: null, type: 'unmatched-it' }));
+  }
+
+  // ─── NEW: chronological → then TDS ascending ───
+  rows.sort((a, b) => {
+    // 1) Date: prefer book date, fallback to IT date
+    const d1 = parseDateForCompare(a.book?.date || a.it?.date);
+    const d2 = parseDateForCompare(b.book?.date || b.it?.date);
+
+    if (d1 && d2 && !isNaN(d1) && !isNaN(d2)) {
+      if (d1.getTime() !== d2.getTime()) return d1 - d2;
+    } else if (d1 && !d2) {
+      return -1;        // a has date, b doesn't → a comes first
+    } else if (!d1 && d2) {
+      return 1;         // b has date, a doesn't → b comes first
+    }
+
+    // 2) TDS amount: prefer book tds, fallback to IT tdsAmount
+    const tds1 = a.book?.tds ?? a.it?.tdsAmount ?? 0;
+    const tds2 = b.book?.tds ?? b.it?.tdsAmount ?? 0;
+    return tds1 - tds2;
+  });
+
+  return rows;
+}, [matched, unmatchedBook, unmatchedIT, ssParty, partyMap]);
+
+  const exportReconcileCSV = () => {
+    const esc = (v) => {
+      const s = String(v ?? "");
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [];
+    lines.push(["Type","Ref No","Party Name","Date","Net Amt","Book TDS","IT Party","IT Date","IT Gross","IT TDS","TDS Diff","Status"].map(esc).join(","));
+
+    matched.forEach(m => {
+      lines.push([
+        "MATCHED", m.book.refNo, m.book.partyName, m.book.date, m.book.netAmt, m.book.tds,
+        m.it.deductorName, m.it.date, m.it.grossAmount, m.it.tdsAmount, m.tdsDiff, "OK"
+      ].map(esc).join(","));
+    });
+    unmatchedBook.forEach(u => {
+      lines.push([
+        "IN BOOK ONLY", u.book.refNo, u.book.partyName, u.book.date, u.book.netAmt, u.book.tds,
+        "", "", "", "", "", "MISSING IN IT"
+      ].map(esc).join(","));
+    });
+    unmatchedIT.forEach(u => {
+      lines.push([
+        "IN IT ONLY", "", "", "", "", "",
+        u.it.deductorName, u.it.date, u.it.grossAmount, u.it.tdsAmount, "", "MISSING IN BOOK"
+      ].map(esc).join(","));
+    });
+
+    const csv = "\uFEFF" + lines.join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `TDS_Reconcile_${activeFY}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const allBookParties = useMemo(() => [...new Set(bookTDS.map(b => b.partyName))].sort(), [bookTDS]);
+  const allITDeductors = useMemo(() => [...new Set(itData.map(it => it.deductorName))].sort(), [itData]);
+
+  return (
+    <div>
+      <h2 style={{ fontSize:20, fontWeight:800, color:"#f1f5f9", marginBottom:20 }}>
+        🧾 TDS Reconcile (Book vs Income Tax)
+      </h2>
+
+      {/* UPLOAD SECTION */}
+      <div style={sec}>
+        <div style={stitle}>Upload Income Tax CSV</div>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr auto", gap:14, alignItems:"end", marginBottom:12 }}>
+          <div>
+            <label style={lbl}>File (.csv only)</label>
+            <label style={{
+              display:"inline-flex", alignItems:"center", justifyContent:"center", gap:8,
+              background: "#22c55e",
+              border:"none", borderRadius:8,
+              padding:"10px 20px", color:"#fff", fontWeight:700, fontSize:13,
+              cursor:"pointer", width:"100%"
+            }}>
+              📁 Choose CSV File(s)
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                multiple
+                onChange={handleFileUpload}
+                style={{ display:"none" }}
+              />
+            </label>
+            <div style={{ fontSize:10, color:"#64748b", marginTop:4 }}>
+              Form 26AS / AIS files: .csv only. Multiple files supported. Already saved entries are skipped; missing ones are added; stale ones are removed per deductor.
+            </div>
+          </div>
+
+          {itData.length > 0 && (
+            <button onClick={exportReconcileCSV} style={{
+              background:"#3b82f6", border:"none", borderRadius:8,
+              padding:"10px 18px", color:"#fff", fontWeight:700, fontSize:12, cursor:"pointer",
+              height:40
+            }}>
+              ⬇ Export CSV
+            </button>
+          )}
+        </div>
+
+        {fileName && (
+          <div style={{ fontSize:13, color:"#cbd5e1" }}>
+            Loaded: <strong style={{ color:"#f59e0b" }}>{fileName}</strong> — {itData.length} entries in database
+          </div>
+        )}
+      </div>
+
+      {/* MAPPING SECTION */}
+      {itData.length > 0 && (
+        <div style={sec}>
+          <div style={stitle}>Map Book Parties → IT Deductors</div>
+          {allBookParties.map(p => (
+            <div key={p} style={{ display:"flex", gap:10, alignItems:"center", marginBottom:8 }}>
+              <span style={{ width:240, fontSize:12, color:"#cbd5e1" }}>{p}</span>
+              <select
+                value={partyMap[p.trim().toLowerCase()] || ""}
+                onChange={async (e) => {
+                  const val = e.target.value;
+                  if (!val) {
+                    const ok = await upsertPartyDeductorMap(p, "");
+                    if (!ok) { showToast("Failed to clear mapping", "error"); return; }
+                    setPartyMap(prev => {
+                      const next = { ...prev };
+                      delete next[p.trim().toLowerCase()];
+                      return next;
+                    });
+                    showToast(`Cleared mapping for "${p}"`);
+                  } else {
+                    const ok = await upsertPartyDeductorMap(p, val);
+                    if (!ok) { showToast("Failed to save mapping", "error"); return; }
+                    setPartyMap(prev => ({ ...prev, [p.trim().toLowerCase()]: val }));
+                    showToast(`Mapped "${p}" → "${val}"`);
+                  }
+                }}
+                style={{ ...inp, maxWidth:320 }}
+              >
+                <option value="">— not mapped —</option>
+                {allITDeductors.map(d => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
+            </div>
+          ))}
+          <div style={{ fontSize:11, color:"#64748b", marginTop:6 }}>
+            Needed when one deductor covers multiple plants in sales working. Select "— not mapped —" to remove a mapping.
+          </div>
+        </div>
+      )}
+
+      {/* SUMMARY CARDS */}
+      {itData.length > 0 && (
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:12, marginBottom:20 }}>
+          <div style={{ background:"#151b2a", borderRadius:8, padding:16, border:"1px solid #1e2a3a" }}>
+            <div style={{ fontSize:11, color:"#64748b", fontWeight:600, marginBottom:6 }}>BOOK TDS (Sales Working)</div>
+            <div style={{ fontSize:22, fontWeight:800, color:"#38bdf8" }}>₹{fmt(totalBookTDS)}</div>
+            <div style={{ fontSize:11, color:"#64748b", marginTop:4 }}>{bookTDS.length} entries</div>
+          </div>
+          <div style={{ background:"#151b2a", borderRadius:8, padding:16, border:"1px solid #1e2a3a" }}>
+            <div style={{ fontSize:11, color:"#64748b", fontWeight:600, marginBottom:6 }}>INCOME TAX TDS</div>
+            <div style={{ fontSize:22, fontWeight:800, color:"#f59e0b" }}>₹{fmt(totalITTDS)}</div>
+            <div style={{ fontSize:11, color:"#64748b", marginTop:4 }}>{itData.length} entries</div>
+          </div>
+          <div style={{ background:"#151b2a", borderRadius:8, padding:16, border:"1px solid #1e2a3a" }}>
+            <div style={{ fontSize:11, color:"#64748b", fontWeight:600, marginBottom:6 }}>MATCHED</div>
+            <div style={{ fontSize:22, fontWeight:800, color:"#22c55e" }}>{matched.length}</div>
+            <div style={{ fontSize:11, color:"#64748b", marginTop:4 }}>
+              Book: ₹{fmt(totalMatchedBook)} | IT: ₹{fmt(totalMatchedIT)}
+            </div>
+          </div>
+          <div style={{ background:"#151b2a", borderRadius:8, padding:16, border:"1px solid #1e2a3a" }}>
+            <div style={{ fontSize:11, color:"#64748b", fontWeight:600, marginBottom:6 }}>DIFFERENCE</div>
+            <div style={{ fontSize:22, fontWeight:800, color: Math.abs(totalBookTDS - totalITTDS) < 1 ? "#22c55e" : "#ef4444" }}>
+              ₹{fmt(Math.abs(totalBookTDS - totalITTDS))}
+            </div>
+            <div style={{ fontSize:11, color:"#64748b", marginTop:4 }}>
+              {totalBookTDS > totalITTDS ? "Book higher" : totalBookTDS < totalITTDS ? "IT higher" : "Balanced"}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* VIEW TOGGLE + SEARCH */}
+      {itData.length > 0 && (
+        <div style={{ display:"flex", gap:12, marginBottom:16, flexWrap:"wrap", alignItems:"center" }}>
+          {[
+            { key:"summary", label:`Matched (${matched.length})` },
+            { key:"unmatched", label:`In Book Only (${unmatchedBook.length})` },
+            { key:"itonly", label:`In IT Only (${unmatchedIT.length})` },
+            { key:"sidebyside", label:`Side by Side` },
+          ].map(v => (
+            <button key={v.key} onClick={() => setViewMode(v.key)}
+              style={{
+                padding:"8px 16px", borderRadius:8, border:"none",
+                background: viewMode === v.key ? "#f59e0b" : "#1e2a3a",
+                color: viewMode === v.key ? "#0f1117" : "#94a3b8",
+                fontWeight:700, fontSize:12, cursor:"pointer"
+              }}>
+              {v.label}
+            </button>
+          ))}
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search party or ref no..."
+            style={{ ...inp, maxWidth:240, marginLeft:"auto" }}
+          />
+        </div>
+      )}
+
+      {/* MATCHED TABLE */}
+      {itData.length > 0 && viewMode === "summary" && (
+        <div style={{ border:"1px solid #1e2a3a", borderRadius:8, overflow:"hidden" }}>
+          <table style={{ width:"100%", borderCollapse:"separate", borderSpacing:0, fontSize:12 }}>
+            <thead>
+              <tr style={{ background:"#151b2a" }}>
+                <th style={{ padding:"10px 12px", textAlign:"left", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>Ref No</th>
+                <th style={{ padding:"10px 12px", textAlign:"left", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>Party</th>
+                <th style={{ padding:"10px 12px", textAlign:"right", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>Book TDS</th>
+                <th style={{ padding:"10px 12px", textAlign:"left", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>IT Party</th>
+                <th style={{ padding:"10px 12px", textAlign:"right", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>IT TDS</th>
+                <th style={{ padding:"10px 12px", textAlign:"right", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>Diff</th>
+                <th style={{ padding:"10px 12px", textAlign:"center", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredMatched.map((m, i) => (
+                <tr key={`m-${i}`} style={{ background: i % 2 === 0 ? "#0f1117" : "#151b2a", borderBottom:"1px solid #1e2a3a" }}>
+                  <td style={{ padding:"10px 12px", color:"#cbd5e1", fontWeight:600 }}>{m.book.refNo}</td>
+                  <td style={{ padding:"10px 12px", color:"#cbd5e1" }}>{m.book.partyName}</td>
+                  <td style={{ padding:"10px 12px", color:"#38bdf8", textAlign:"right", fontWeight:700 }}>₹{fmt(m.book.tds)}</td>
+                  <td style={{ padding:"10px 12px", color:"#f59e0b" }}>{m.it.deductorName}</td>
+                  <td style={{ padding:"10px 12px", color:"#f59e0b", textAlign:"right", fontWeight:700 }}>₹{fmt(m.it.tdsAmount)}</td>
+                  <td style={{ padding:"10px 12px", textAlign:"right", color: Math.abs(m.tdsDiff) < 1 ? "#22c55e" : "#ef4444", fontWeight:700 }}>
+                    {m.tdsDiff > 0 ? "+" : ""}{fmt(m.tdsDiff)}
+                  </td>
+                  <td style={{ padding:"10px 12px", textAlign:"center" }}>
+                    <span style={{
+                      background: Math.abs(m.tdsDiff) < 1 ? "#22c55e33" : Math.abs(m.tdsDiff) < 10 ? "#f59e0b33" : "#ef444433",
+                      color: Math.abs(m.tdsDiff) < 1 ? "#22c55e" : Math.abs(m.tdsDiff) < 10 ? "#f59e0b" : "#ef4444",
+                      padding:"3px 10px", borderRadius:4, fontSize:11, fontWeight:700
+                    }}>
+                      {Math.abs(m.tdsDiff) < 1 ? "✓ MATCHED" : Math.abs(m.tdsDiff) < 10 ? "~ NEAR" : "MISMATCH"}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+              {filteredMatched.length === 0 && (
+                <tr><td colSpan={7} style={{ padding:24, textAlign:"center", color:"#64748b" }}>No matched entries found.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* UNMATCHED BOOK TABLE */}
+      {itData.length > 0 && viewMode === "unmatched" && (
+        <div style={{ border:"1px solid #1e2a3a", borderRadius:8, overflow:"hidden" }}>
+          <table style={{ width:"100%", borderCollapse:"separate", borderSpacing:0, fontSize:12 }}>
+            <thead>
+              <tr style={{ background:"#151b2a" }}>
+                <th style={{ padding:"10px 12px", textAlign:"left", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>Ref No</th>
+                <th style={{ padding:"10px 12px", textAlign:"left", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>Party</th>
+                <th style={{ padding:"10px 12px", textAlign:"left", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>Date</th>
+                <th style={{ padding:"10px 12px", textAlign:"right", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>Net Amt</th>
+                <th style={{ padding:"10px 12px", textAlign:"right", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>TDS</th>
+                <th style={{ padding:"10px 12px", textAlign:"center", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>Issue</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredUnmatchedBook.map((u, i) => (
+                <tr key={`ub-${i}`} style={{ background: i % 2 === 0 ? "#0f1117" : "#151b2a", borderBottom:"1px solid #1e2a3a" }}>
+                  <td style={{ padding:"10px 12px", color:"#cbd5e1", fontWeight:600 }}>{u.book.refNo}</td>
+                  <td style={{ padding:"10px 12px", color:"#cbd5e1" }}>{u.book.partyName}</td>
+                  <td style={{ padding:"10px 12px", color:"#94a3b8" }}>{fmtDate(u.book.date)}</td>
+                  <td style={{ padding:"10px 12px", color:"#cbd5e1", textAlign:"right" }}>₹{fmt(u.book.netAmt)}</td>
+                  <td style={{ padding:"10px 12px", color:"#ef4444", textAlign:"right", fontWeight:700 }}>₹{fmt(u.book.tds)}</td>
+                  <td style={{ padding:"10px 12px", textAlign:"center" }}>
+                    <span style={{ background:"#ef444433", color:"#ef4444", padding:"3px 10px", borderRadius:4, fontSize:11, fontWeight:700 }}>
+                      NOT IN IT PORTAL
+                    </span>
+                  </td>
+                </tr>
+              ))}
+              {filteredUnmatchedBook.length === 0 && (
+                <tr><td colSpan={6} style={{ padding:24, textAlign:"center", color:"#64748b" }}>All book entries are matched! ✓</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* UNMATCHED IT TABLE */}
+      {itData.length > 0 && viewMode === "itonly" && (
+        <div style={{ border:"1px solid #1e2a3a", borderRadius:8, overflow:"hidden" }}>
+          <table style={{ width:"100%", borderCollapse:"separate", borderSpacing:0, fontSize:12 }}>
+            <thead>
+              <tr style={{ background:"#151b2a" }}>
+                <th style={{ padding:"10px 12px", textAlign:"left", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>Deductor</th>
+                <th style={{ padding:"10px 12px", textAlign:"left", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>PAN</th>
+                <th style={{ padding:"10px 12px", textAlign:"left", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>Date</th>
+                <th style={{ padding:"10px 12px", textAlign:"right", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>Gross Amt</th>
+                <th style={{ padding:"10px 12px", textAlign:"right", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>TDS</th>
+                <th style={{ padding:"10px 12px", textAlign:"center", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>Section</th>
+                <th style={{ padding:"10px 12px", textAlign:"center", color:"#64748b", borderBottom:"1px solid #1e2a3a" }}>Issue</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredUnmatchedIT.map((u, i) => (
+                <tr key={`ui-${i}`} style={{ background: i % 2 === 0 ? "#0f1117" : "#151b2a", borderBottom:"1px solid #1e2a3a" }}>
+                  <td style={{ padding:"10px 12px", color:"#cbd5e1", fontWeight:600 }}>{u.it.deductorName}</td>
+                  <td style={{ padding:"10px 12px", color:"#94a3b8", fontFamily:"monospace", fontSize:11 }}>{u.it.deductorPan}</td>
+                  <td style={{ padding:"10px 12px", color:"#94a3b8" }}>{fmtDate(u.it.date)}</td>
+                  <td style={{ padding:"10px 12px", color:"#cbd5e1", textAlign:"right" }}>₹{fmt(u.it.grossAmount)}</td>
+                  <td style={{ padding:"10px 12px", color:"#22c55e", textAlign:"right", fontWeight:700 }}>₹{fmt(u.it.tdsAmount)}</td>
+                  <td style={{ padding:"10px 12px", textAlign:"center", color:"#cbd5e1" }}>{u.it.sectionCode}</td>
+                  <td style={{ padding:"10px 12px", textAlign:"center" }}>
+                    <span style={{ background:"#f59e0b33", color:"#f59e0b", padding:"3px 10px", borderRadius:4, fontSize:11, fontWeight:700 }}>
+                      NOT IN BOOK
+                    </span>
+                  </td>
+                </tr>
+              ))}
+              {filteredUnmatchedIT.length === 0 && (
+                <tr><td colSpan={7} style={{ padding:24, textAlign:"center", color:"#64748b" }}>All IT entries are matched! ✓</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {itData.length === 0 && (
+        <div style={{ padding:40, textAlign:"center", color:"#64748b", background:"#151b2a", borderRadius:8, border:"1px solid #1e2a3a" }}>
+          <div style={{ fontSize:14, marginBottom:8 }}>No Income Tax data loaded yet.</div>
+          <div style={{ fontSize:12 }}>Upload the CSV file from the Income Tax portal to begin reconciliation.</div>
+        </div>
+      )}
+
+      {/* SIDE BY SIDE */}
+      {itData.length > 0 && viewMode === "sidebyside" && (
+        <div style={{ width:"100vw", marginLeft:"calc(50% - 50vw)", padding:"0 24px", boxSizing:"border-box" }}>
+          <div style={{ marginBottom:12 }}>
+            <label style={{ ...lbl, marginBottom:6 }}>Filter by IT Deductor</label>
+            <select value={ssParty} onChange={e => setSsParty(e.target.value)}
+              style={{ ...inp, maxWidth:280 }}>
+              <option value="">All deductors</option>
+              {allITDeductors.map(p => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+            </select>
+          </div>
+
+          <div style={{ border:"1px solid #1e2a3a", borderRadius:8, overflow:"hidden" }}>
+            <table style={{ width:"100%", borderCollapse:"separate", borderSpacing:0, fontSize:12 }}>
+              <thead>
+                <tr style={{ background:"#151b2a" }}>
+                  <th colSpan={5} style={{ padding:"8px 12px", textAlign:"center", color:"#38bdf8", borderBottom:"1px solid #1e2a3a", borderRight:"2px solid #f59e0b" }}>← BOOK (SALES WORKING)</th>
+                  <th colSpan={4} style={{ padding:"8px 12px", textAlign:"center", color:"#f59e0b", borderBottom:"1px solid #1e2a3a" }}>INCOME TAX PORTAL →</th>
+                </tr>
+                <tr style={{ background:"#151b2a" }}>
+                  <th style={{ padding:"8px 10px", textAlign:"left", color:"#64748b", borderBottom:"1px solid #1e2a3a", borderRight:"1px solid #1e2a3a", width:"12%" }}>Date</th>
+                  <th style={{ padding:"8px 10px", textAlign:"left", color:"#64748b", borderBottom:"1px solid #1e2a3a", borderRight:"1px solid #1e2a3a", width:"10%" }}>Ref No</th>
+                  <th style={{ padding:"8px 10px", textAlign:"left", color:"#64748b", borderBottom:"1px solid #1e2a3a", borderRight:"1px solid #1e2a3a", width:"18%" }}>Party</th>
+                  <th style={{ padding:"8px 10px", textAlign:"right", color:"#64748b", borderBottom:"1px solid #1e2a3a", borderRight:"1px solid #1e2a3a", width:"12%" }}>Gross (TDS Base)</th>
+                  <th style={{ padding:"8px 10px", textAlign:"right", color:"#64748b", borderBottom:"1px solid #1e2a3a", borderRight:"2px solid #f59e0b", width:"10%" }}>TDS</th>
+                  <th style={{ padding:"8px 10px", textAlign:"left", color:"#64748b", borderBottom:"1px solid #1e2a3a", borderRight:"1px solid #1e2a3a", width:"12%" }}>Date</th>
+                  <th style={{ padding:"8px 10px", textAlign:"left", color:"#64748b", borderBottom:"1px solid #1e2a3a", borderRight:"1px solid #1e2a3a", width:"16%" }}>Deductor</th>
+                  <th style={{ padding:"8px 10px", textAlign:"right", color:"#64748b", borderBottom:"1px solid #1e2a3a", borderRight:"1px solid #1e2a3a", width:"12%" }}>Gross Amt</th>
+                  <th style={{ padding:"8px 10px", textAlign:"right", color:"#64748b", borderBottom:"1px solid #1e2a3a", width:"10%" }}>TDS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sideBySideRows.map((row, i) => (
+                  <tr key={`ss-${i}-${row.type}`} style={{ background: i % 2 === 0 ? "#0f1117" : "#151b2a", borderBottom:"1px solid #1e2a3a" }}>
+                    <td style={{ padding:"8px 10px", color:"#38bdf8", borderRight:"1px solid #1e2a3a" }}>{row.book ? fmtDate(row.book.date) : ""}</td>
+                    <td style={{ padding:"8px 10px", color:"#cbd5e1", borderRight:"1px solid #1e2a3a" }}>{row.book ? row.book.refNo : <span style={{ color:"#64748b" }}>— no bill —</span>}</td>
+                    <td style={{ padding:"8px 10px", color:"#cbd5e1", borderRight:"1px solid #1e2a3a" }}>{row.book ? row.book.partyName : ""}</td>
+                    <td style={{ padding:"8px 10px", textAlign:"right", color:"#cbd5e1", borderRight:"1px solid #1e2a3a" }}>{row.book ? "₹" + fmt(row.book.grossAmt) : ""}</td>
+                    <td style={{ padding:"8px 10px", textAlign:"right", color:"#38bdf8", fontWeight:700, borderRight:"2px solid #f59e0b" }}>{row.book ? "₹" + fmt(row.book.tds) : ""}</td>
+                    <td style={{ padding:"8px 10px", color:"#f59e0b", borderRight:"1px solid #1e2a3a" }}>
+                      {row.it ? (
+                        <>
+                          {fmtDate(row.it.date)}
+                          {row.book && (() => {
+                            const dBook = parseDateForCompare(row.book.date);
+                            const dIt   = parseDateForCompare(row.it.date);
+                            if (dBook && dIt && !isNaN(dBook) && !isNaN(dIt)) {
+                              const diffDays = Math.round((dIt - dBook) / (1000 * 60 * 60 * 24));
+                              const diffText = diffDays === 0 ? "same day" : diffDays > 0 ? `+${diffDays} days` : `${diffDays} days`;
+                              const diffColor = diffDays === 0 ? "#22c55e" : Math.abs(diffDays) <= 2 ? "#f59e0b" : "#ef4444";
+                              return <div style={{fontSize:10, color: diffColor, marginTop:2, fontWeight:600}}>{diffText}</div>;
+                            }
+                            return null;
+                          })()}
+                        </>
+                      ) : (
+                        <span style={{ color:"#64748b" }}>— no entry —</span>
+                      )}
+                    </td>
+                    <td style={{ padding:"8px 10px", color:"#cbd5e1", borderRight:"1px solid #1e2a3a" }}>{row.it ? row.it.deductorName : ""}</td>
+                    <td style={{ padding:"8px 10px", textAlign:"right", color:"#cbd5e1", borderRight:"1px solid #1e2a3a" }}>{row.it ? "₹" + fmt(row.it.grossAmount) : ""}</td>
+                    <td style={{ padding:"8px 10px", textAlign:"right", color:"#f59e0b", fontWeight:700,
+                      background: row.tdsDiff === null ? "transparent" : Math.abs(row.tdsDiff) < 1 ? "#22c55e22" : Math.abs(row.tdsDiff) < 10 ? "#f59e0b22" : "#ef444422" }}>
+                      {row.it ? "₹" + fmt(row.it.tdsAmount) : ""}
+                      {row.tdsDiff !== null && Math.abs(row.tdsDiff) >= 1 && (
+                        <div style={{ fontSize:10, color: Math.abs(row.tdsDiff) < 10 ? "#f59e0b" : "#ef4444" }}>
+                          Δ {row.tdsDiff > 0 ? "+" : ""}{fmt(row.tdsDiff)}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                <tr style={{ background:"#151b2a", borderTop:"2px solid #f59e0b" }}>
+                  <td colSpan={4} style={{ padding:"10px", fontWeight:700, color:"#38bdf8" }}>BOOK TOTAL</td>
+                  <td style={{ padding:"10px", textAlign:"right", fontWeight:800, color:"#38bdf8", borderRight:"2px solid #f59e0b" }}>
+                    ₹{fmt(sideBySideRows.reduce((s, r) => s + (r.book?.tds || 0), 0))}
+                  </td>
+                  <td colSpan={3} style={{ padding:"10px", fontWeight:700, color:"#f59e0b" }}>IT TOTAL</td>
+                  <td style={{ padding:"10px", textAlign:"right", fontWeight:800, color:"#f59e0b" }}>
+                    ₹{fmt(sideBySideRows.reduce((s, r) => s + (r.it?.tdsAmount || 0), 0))}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ClaimManagementTab({ claimRules: externalRules, setClaimRules: setExternalRules, activeFY }) {
   const [claims, setClaims] = useState([]);
@@ -3369,7 +4240,7 @@ const [users, setUsers] = useState([]);
   const [editUsername, setEditUsername] = useState("");
 const [editRole, setEditRole] = useState("Restricted");
 
-const allTabs = ["entry", "data", "externalSourcePurchase", "pmt", "hisab", "manage", "banking", "reconcile", "sales", "purchaseSalesReconcile", "tds", "claimManagement", "loan" ,"users"];
+const allTabs = ["entry", "data", "externalSourcePurchase", "pmt", "hisab", "manage", "banking", "reconcile", "sales", "purchaseSalesReconcile", "tds", "claimManagement", "loan" ,"users","tdsReconcile"];
 const tabLabels = {
   entry: "+ New Entry",
   data: "☰ Data",
@@ -3385,6 +4256,7 @@ const tabLabels = {
   tds: "🧾 TDS",
   users: "👥 Users",
   loan: "💰 Loan",
+  tdsReconcile: "🧾 TDS Reconcile",
 };
   useEffect(() => {
   (async () => {
@@ -9629,6 +10501,16 @@ const handleUnignore = async (party) => {
   activeFY={activeFY}
 />
 )}
+  
+{view === "tdsReconcile" && (
+  <TDSReconcileTab 
+    salesWorkingData={salesWorkingData} 
+    activeFY={activeFY} 
+    showToast={showToast} 
+     claimRules={claimRules}
+  />
+)}
+
   {view === "loan" && (
   <div>
     <h2 style={{ fontSize:20, fontWeight:800, color:"#f1f5f9", marginBottom:16 }}>💰 LOAN</h2>
