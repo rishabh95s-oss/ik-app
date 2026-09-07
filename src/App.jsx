@@ -1944,17 +1944,47 @@ const WORKING_TABLE_COMPONENTS = {
     
     // Guard: only show if at least one bank payment exists
     const hasAnyPayment = (parseFloat(rec.bankPmt1) || 0) > 0
-                       || (parseFloat(rec.bankPmt2) || 0) > 0
-                       || (parseFloat(rec.bankPmt3) || 0) > 0;
+                         || (parseFloat(rec.bankPmt2) || 0) > 0
+                         || (parseFloat(rec.bankPmt3) || 0) > 0;
 
     if (Math.abs(pending) < 0.01 || !hasAnyPayment) return null;
 
     return (
       <button
-        onClick={() => {
-          const adjustedClaim = (parseFloat(rec.claim) || 0) + pending;
-          onSave({ ...rec, claim: parseFloat(adjustedClaim.toFixed(2)) });
-        }}
+    onClick={() => {
+  // Iteratively absorb pending into claim until net is zero,
+  // recalculating auto-TDS each time so it converges in one click.
+  let workingRec = { ...rec };
+  let workingCalc = calculated;
+
+  for (let i = 0; i < 5; i++) {
+    const pending = parseFloat(workingCalc.pendingAmt) || 0;
+    if (Math.abs(pending) < 0.01) break;
+
+    const adjustedClaim = (parseFloat(workingRec.claim) || 0) + pending;
+    let patch = { ...workingRec, claim: parseFloat(adjustedClaim.toFixed(2)) };
+
+    // Recalculate auto-TDS on the updated claim (unless user typed TDS manually)
+    if (!tdsManualRef.current) {
+      const autoTds = getAutoTds(patch);
+      if (autoTds !== null) patch.tdsReceived = autoTds;
+    }
+
+    // Check if pending is now resolved
+    const newCalc = calculateSalesFields(patch);
+    if (Math.abs(newCalc.pendingAmt) < 0.01) {
+      onSave(patch);
+      return;
+    }
+
+    // Otherwise continue iterating with the new state
+    workingRec = patch;
+    workingCalc = newCalc;
+  }
+
+  // Save final converged state
+  onSave(workingRec);
+}}
         title={`Pending mismatch: ₹${pending.toFixed(2)}. Click to absorb into claim.`}
         style={{
           background: pending > 0 ? "#f59e0b" : "#10b981",
@@ -1971,7 +2001,7 @@ const WORKING_TABLE_COMPONENTS = {
       </button>
     );
   })()}
-</td>   
+</td>      
     </>
   );
 });
