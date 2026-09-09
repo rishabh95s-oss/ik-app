@@ -1230,8 +1230,10 @@ const CONFLICT = {
   }
   return results;
 }
+
 export async function loadPartyDeductorMap() {
-  const { data } = await supabase.from('party_deductor_map').select('book_party, deductor_name');
+  const { data, error } = await fetchAll('party_deductor_map', q => q.select('*'));
+  if (error) { console.error('loadPartyDeductorMap:', error.message); return {}; }
   const map = {};
   (data || []).forEach(r => { map[r.book_party.toLowerCase()] = r.deductor_name; });
   return map;
@@ -1245,13 +1247,11 @@ export async function upsertPartyDeductorMap(bookParty, deductorName) {
 }
 
 export async function loadITEntries(fy) {
-  const { data, error } = await supabase
-    .from('tds_it_entries')
-    .select('*')
-    .eq('fy', fy)
-    .order('date', { ascending: true });
-  if (error) { console.error(error); return []; }
-  return data || [];
+  const { data, error } = await fetchAll('tds_it_entries', q =>
+    q.eq('fy', fy).order('date', { ascending: true })
+  );
+  if (error) { console.error('loadITEntries:', error.message); return []; }
+  return data;
 }
 
 export async function upsertITEntry(entry) {
@@ -1269,9 +1269,10 @@ export async function upsertITEntry(entry) {
       gross_amount: entry.grossAmount || 0,
       tds_amount: entry.tdsAmount || 0,
       status: entry.status || "",
-      source_path: entry._sourcePath || ""
+      source_path: entry._sourcePath || "",
+      line_no: entry.lineNo ?? null        // ← from the CSV's S.No column
     }, {
-      onConflict: ['user_id', 'fy', 'deductor_name', 'date', 'tds_amount', 'gross_amount']
+      onConflict: 'user_id,fy,deductor_name,date,tds_amount,gross_amount,line_no'
     });
   if (error) { console.error("upsertITEntry error:", error); return false; }
   return true;
@@ -1281,4 +1282,13 @@ export async function deleteITEntry(id) {
   const { error } = await supabase.from('tds_it_entries').delete().eq('id', id);
   if (error) { console.error(error); return false; }
   return true;
+}
+
+export async function deleteITEntriesByDeductor(fy, deductorName) {
+  const { error } = await supabase
+    .from("it_entries")
+    .delete()
+    .eq("fy", fy)
+    .eq("deductor_name", deductorName);
+  return !error;
 }

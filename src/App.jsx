@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { IMPORTED_DATA } from "./importedData.js";
-import { loadRecords, upsertRecord, deleteRecord, loadSalesFlash, replaceSalesFlash, loadPurchaseFlash, replacePurchaseFlash, loadSalesWorking, upsertWorkingRow, upsertWorkingBatch, deleteWorkingRow, loadParties, addParty, deleteParty, loadBrokers, addBroker, deleteBroker, loadDeliveries, addDelivery, deleteDelivery, loadClaimRules, upsertClaimRule, deleteClaimRule, loadAppUsers, upsertAppUser, deleteAppUser, loadBankTransactions, upsertBankTransactions, updateBankTransaction, deleteBankTransaction, renamePurchaseParty, renamePurchaseDeliveryAt, renameSalesWorkingParty, renameClaimRuleParty, countPurchasesByParty, countPurchasesByDeliveryAt, countSalesWorkingByParty, countClaimRulesByParty, loadPmtLinkedSlots, upsertPmtLinkedSlot, deletePmtLinkedSlot, loadPartyPans, updatePartyPan, updatePartyPanVerified, loadFinancialYears, createFinancialYear, loadLoanParties, addLoanParty, deleteLoanParty, updateLoanPartyPan, updateLoanPartyPanVerified, loadLoanBrokers, addLoanBroker, deleteLoanBroker, updateLoanBrokerPan, updateLoanBrokerPanVerified, createLoan, addLoanInterestEvent, addLoanBrokerageAccrual, loadLoanInterestEvents, loadActiveFixedLoans, updateLoanDueDate, loadLoanBrokerageAccruals, loadLoanBrokeragePayments, addLoanBrokeragePayment, deleteLoanTerm, loadLoansWithTerms, settleNonFixedLoan, deleteNonFixedLoan, updateLoanRates , updateLoanPartyForm15h, loadBanks, addBank, deleteBank,  loadIgnoredSalesParties, addIgnoredSalesParty, deleteIgnoredSalesParty, deleteBankTransactionsByDate, countLinkedOnDate, exportFullBackup, importFullBackup,loadPartyDeductorMap,upsertPartyDeductorMap, loadITEntries, upsertITEntry, deleteITEntry } from "./dataService.js";
+import { loadRecords, upsertRecord, deleteRecord, loadSalesFlash, replaceSalesFlash, loadPurchaseFlash, replacePurchaseFlash, loadSalesWorking, upsertWorkingRow, upsertWorkingBatch, deleteWorkingRow, loadParties, addParty, deleteParty, loadBrokers, addBroker, deleteBroker, loadDeliveries, addDelivery, deleteDelivery, loadClaimRules, upsertClaimRule, deleteClaimRule, loadAppUsers, upsertAppUser, deleteAppUser, loadBankTransactions, upsertBankTransactions, updateBankTransaction, deleteBankTransaction, renamePurchaseParty, renamePurchaseDeliveryAt, renameSalesWorkingParty, renameClaimRuleParty, countPurchasesByParty, countPurchasesByDeliveryAt, countSalesWorkingByParty, countClaimRulesByParty, loadPmtLinkedSlots, upsertPmtLinkedSlot, deletePmtLinkedSlot, loadPartyPans, updatePartyPan, updatePartyPanVerified, loadFinancialYears, createFinancialYear, loadLoanParties, addLoanParty, deleteLoanParty, updateLoanPartyPan, updateLoanPartyPanVerified, loadLoanBrokers, addLoanBroker, deleteLoanBroker, updateLoanBrokerPan, updateLoanBrokerPanVerified, createLoan, addLoanInterestEvent, addLoanBrokerageAccrual, loadLoanInterestEvents, loadActiveFixedLoans, updateLoanDueDate, loadLoanBrokerageAccruals, loadLoanBrokeragePayments, addLoanBrokeragePayment, deleteLoanTerm, loadLoansWithTerms, settleNonFixedLoan, deleteNonFixedLoan, updateLoanRates , updateLoanPartyForm15h, loadBanks, addBank, deleteBank,  loadIgnoredSalesParties, addIgnoredSalesParty, deleteIgnoredSalesParty, deleteBankTransactionsByDate, countLinkedOnDate, exportFullBackup, importFullBackup,loadPartyDeductorMap,upsertPartyDeductorMap, loadITEntries, upsertITEntry, deleteITEntry, deleteITEntriesByDeductor, } from "./dataService.js";
 import { TableVirtuoso, Virtuoso } from "react-virtuoso";
 import { supabase } from './supabaseClient.js';
 import * as zip from "@zip.js/zip.js";
@@ -183,6 +183,7 @@ function TDSReconcileTab({ salesWorkingData, activeFY, showToast, claimRules = [
       }
 
       const entry = {
+        lineNo: parseInt(unq(cells[0]), 10) || i,
         deductorName: rawName,
         deductorPan: pan,
         sectionCode: unq(cells[cSection]),
@@ -194,8 +195,8 @@ function TDSReconcileTab({ salesWorkingData, activeFY, showToast, claimRules = [
         _sourcePath: `${filePrefix}[csv-${i}]`
       };
 
-           const statusNorm = (entry.status || "").toLowerCase().trim();
-      const isActive = ["active", "booked"].some(s => statusNorm.includes(s));
+              const statusNorm = (entry.status || "").toLowerCase().trim();
+      const isActive = statusNorm === "" || /^(active|booked)$/.test(statusNorm);
 
       if ((entry.deductorName || entry.deductorPan || entry.tdsAmount > 0) && isActive) {
         results.push(entry);
@@ -229,57 +230,56 @@ function TDSReconcileTab({ salesWorkingData, activeFY, showToast, claimRules = [
 
   // ─── Sync parsed IT entries with Supabase (auto-FY) ───
   const syncITEntries = async (parsedEntries) => {
-    const byFY = {};
-    parsedEntries.forEach(e => {
-      const fy = getFYFromDate(e.date);
-      if (!byFY[fy]) byFY[fy] = [];
-      byFY[fy].push(e);
+  // Group by FY of each entry's date
+  const byFY = {};
+  parsedEntries.forEach(e => {
+    const fy = getFYFromDate(e.date);
+    (byFY[fy] ||= []).push(e);
+  });
+
+  const summary = {};
+
+  for (const [fy, rows] of Object.entries(byFY)) {
+    // ONLY this FY's rows are touched — other FYs are never affected
+    const existing = await loadITEntries(fy);
+
+    // Group the new file's rows by deductor
+    const byDeductor = {};
+    rows.forEach(e => {
+      const key = e.deductorName.trim().toLowerCase();
+      (byDeductor[key] ||= []).push(e);
     });
 
-    const summary = {};
+    let added = 0, removed = 0, skipped = 0;
 
-    for (const [fy, rows] of Object.entries(byFY)) {
-      const existing = await loadITEntries(fy);
-      const byDeductor = {};
-      rows.forEach(e => {
-        const key = e.deductorName.trim().toLowerCase();
-        if (!byDeductor[key]) byDeductor[key] = [];
-        byDeductor[key].push(e);
-      });
+ 
 
-      let added = 0, skipped = 0, removed = 0;
-      const makeKey = (date, tds, gross) =>
-        `${date}|${Math.round(parseFloat(tds) || 0)}|${Math.round(parseFloat(gross) || 0)}`;
-
-      for (const [deductorKey, newRows] of Object.entries(byDeductor)) {
-        const dbRows = existing.filter(r =>
-          (r.deductor_name || "").trim().toLowerCase() === deductorKey
-        );
-        const dbKeySet = new Set(dbRows.map(r => makeKey(r.date, r.tds_amount, r.gross_amount)));
-        const newKeySet = new Set(newRows.map(r => makeKey(r.date, r.tdsAmount, r.grossAmount)));
-
-        for (const row of newRows) {
-          if (!dbKeySet.has(makeKey(row.date, row.tdsAmount, row.grossAmount))) {
-            const ok = await upsertITEntry({ ...row, fy });
-            if (ok) added++;
-          }
-        }
-
-        for (const row of dbRows) {
-          if (!newKeySet.has(makeKey(row.date, row.tds_amount, row.gross_amount))) {
-            const ok = await deleteITEntry(row.id);
-            if (ok) removed++;
-          }
-        }
-
-        skipped += newRows.filter(r => dbKeySet.has(makeKey(r.date, r.tdsAmount, r.grossAmount))).length;
+    for (const [deductorKey, newRows] of Object.entries(byDeductor)) {
+      // ── STEP 1: Delete ALL old DB rows for THIS deductor in THIS FY ──
+      const dbRows = existing.filter(r =>
+        (r.deductor_name || "").trim().toLowerCase() === deductorKey
+      );
+      for (const row of dbRows) {
+        const ok = await deleteITEntry(row.id);
+        if (ok) removed++;
       }
 
-      summary[fy] = { added, skipped, removed };
+      // ── STEP 2: NO dedupe — the IT portal legitimately reports multiple
+      // identical rows (same date, same gross, same TDS). Dropping them
+      // undercounts TDS. Removed.
+
+      // ── STEP 3: Insert everything fresh ──
+      for (const row of newRows) {
+        const ok = await upsertITEntry({ ...row, fy });
+        if (ok) added++;
+      }
     }
 
-    return summary;
-  };
+    summary[fy] = { added, skipped: 0, removed };
+  }
+
+  return summary;
+};
 
   // ─── File handler — CSV upload with auto-FY sync ───
   const handleFileUpload = async (e) => {
