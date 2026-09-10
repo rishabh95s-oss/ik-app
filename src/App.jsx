@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { IMPORTED_DATA } from "./importedData.js";
-import { loadRecords, upsertRecord, deleteRecord, loadSalesFlash, replaceSalesFlash, loadPurchaseFlash, replacePurchaseFlash, loadSalesWorking, upsertWorkingRow, upsertWorkingBatch, deleteWorkingRow, loadParties, addParty, deleteParty, loadBrokers, addBroker, deleteBroker, loadDeliveries, addDelivery, deleteDelivery, loadClaimRules, upsertClaimRule, deleteClaimRule, loadAppUsers, upsertAppUser, deleteAppUser, loadBankTransactions, upsertBankTransactions, updateBankTransaction, deleteBankTransaction, renamePurchaseParty, renamePurchaseDeliveryAt, renameSalesWorkingParty, renameClaimRuleParty, countPurchasesByParty, countPurchasesByDeliveryAt, countSalesWorkingByParty, countClaimRulesByParty, loadPmtLinkedSlots, upsertPmtLinkedSlot, deletePmtLinkedSlot, loadPartyPans, updatePartyPan, updatePartyPanVerified, loadFinancialYears, createFinancialYear, loadLoanParties, addLoanParty, deleteLoanParty, updateLoanPartyPan, updateLoanPartyPanVerified, loadLoanBrokers, addLoanBroker, deleteLoanBroker, updateLoanBrokerPan, updateLoanBrokerPanVerified, createLoan, addLoanInterestEvent, addLoanBrokerageAccrual, loadLoanInterestEvents, loadActiveFixedLoans, updateLoanDueDate, loadLoanBrokerageAccruals, loadLoanBrokeragePayments, addLoanBrokeragePayment, deleteLoanTerm, loadLoansWithTerms, settleNonFixedLoan, deleteNonFixedLoan, updateLoanRates , updateLoanPartyForm15h, loadBanks, addBank, deleteBank,  loadIgnoredSalesParties, addIgnoredSalesParty, deleteIgnoredSalesParty, deleteBankTransactionsByDate, countLinkedOnDate, exportFullBackup, importFullBackup,loadPartyDeductorMap,upsertPartyDeductorMap, loadITEntries, upsertITEntry, deleteITEntry, deleteITEntriesByDeductor, } from "./dataService.js";
+import { loadRecords, upsertRecord, deleteRecord, loadSalesFlash, replaceSalesFlash, loadPurchaseFlash, replacePurchaseFlash, loadSalesWorking, upsertWorkingRow, upsertWorkingBatch, deleteWorkingRow, loadParties, addParty, deleteParty, loadBrokers, addBroker, deleteBroker, loadDeliveries, addDelivery, deleteDelivery, loadClaimRules, upsertClaimRule, deleteClaimRule, loadAppUsers, upsertAppUser, deleteAppUser, loadBankTransactions, upsertBankTransactions, updateBankTransaction, deleteBankTransaction, renamePurchaseParty, renamePurchaseDeliveryAt, renameSalesWorkingParty, renameClaimRuleParty, countPurchasesByParty, countPurchasesByDeliveryAt, countSalesWorkingByParty, countClaimRulesByParty, loadPmtLinkedSlots, upsertPmtLinkedSlot, deletePmtLinkedSlot, loadPartyPans, updatePartyPan, updatePartyPanVerified, loadFinancialYears, createFinancialYear, loadLoanParties, addLoanParty, deleteLoanParty, updateLoanPartyPan, updateLoanPartyPanVerified, loadLoanBrokers, addLoanBroker, deleteLoanBroker, updateLoanBrokerPan, updateLoanBrokerPanVerified, createLoan, addLoanInterestEvent, addLoanBrokerageAccrual, loadLoanInterestEvents, loadActiveFixedLoans, updateLoanDueDate, loadLoanBrokerageAccruals, loadLoanBrokeragePayments, addLoanBrokeragePayment, deleteLoanTerm, loadLoansWithTerms, settleNonFixedLoan, deleteNonFixedLoan, updateLoanRates , updateLoanPartyForm15h, loadBanks, addBank, deleteBank,  loadIgnoredSalesParties, addIgnoredSalesParty, deleteIgnoredSalesParty, deleteBankTransactionsByDate, countLinkedOnDate, exportFullBackup, importFullBackup,loadPartyDeductorMap,upsertPartyDeductorMap, loadITEntries, upsertITEntry, deleteITEntry, deleteITEntriesByDeductor, insertITEntriesBatch, } from "./dataService.js";
 import { TableVirtuoso, Virtuoso } from "react-virtuoso";
 import { supabase } from './supabaseClient.js';
 import * as zip from "@zip.js/zip.js";
@@ -12,6 +12,7 @@ function TDSReconcileTab({ salesWorkingData, activeFY, showToast, claimRules = [
   const [search, setSearch] = useState("");
   const [ssParty, setSsParty] = useState("");
   const [partyMap, setPartyMap] = useState({});
+  const [syncProgress, setSyncProgress] = useState(null);
 
   // Load and normalize party map (keys must be lowercase)
   useEffect(() => {
@@ -228,9 +229,7 @@ function TDSReconcileTab({ salesWorkingData, activeFY, showToast, claimRules = [
     return `${startYear}-${String((startYear + 1) % 100).padStart(2, '0')}`;
   };
 
-  // ─── Sync parsed IT entries with Supabase (auto-FY) ───
-  const syncITEntries = async (parsedEntries) => {
-  // Group by FY of each entry's date
+const syncITEntries = async (parsedEntries, onProgress) => {
   const byFY = {};
   parsedEntries.forEach(e => {
     const fy = getFYFromDate(e.date);
@@ -238,40 +237,34 @@ function TDSReconcileTab({ salesWorkingData, activeFY, showToast, claimRules = [
   });
 
   const summary = {};
+  const total = parsedEntries.length;
+  let done = 0;
 
   for (const [fy, rows] of Object.entries(byFY)) {
-    // ONLY this FY's rows are touched — other FYs are never affected
     const existing = await loadITEntries(fy);
 
-    // Group the new file's rows by deductor
     const byDeductor = {};
     rows.forEach(e => {
       const key = e.deductorName.trim().toLowerCase();
       (byDeductor[key] ||= []).push(e);
     });
 
-    let added = 0, removed = 0, skipped = 0;
+    let added = 0, removed = 0;
 
- 
+    for (const newRows of Object.values(byDeductor)) {
+      // ONE delete call per deductor instead of one per row
+      const okDel = await deleteITEntriesByDeductor(fy, newRows[0].deductorName);
+      if (okDel) removed += newRows.length; // approx; old count may differ
 
-    for (const [deductorKey, newRows] of Object.entries(byDeductor)) {
-      // ── STEP 1: Delete ALL old DB rows for THIS deductor in THIS FY ──
-      const dbRows = existing.filter(r =>
-        (r.deductor_name || "").trim().toLowerCase() === deductorKey
-      );
-      for (const row of dbRows) {
-        const ok = await deleteITEntry(row.id);
-        if (ok) removed++;
-      }
-
-      // ── STEP 2: NO dedupe — the IT portal legitimately reports multiple
-      // identical rows (same date, same gross, same TDS). Dropping them
-      // undercounts TDS. Removed.
-
-      // ── STEP 3: Insert everything fresh ──
-      for (const row of newRows) {
-        const ok = await upsertITEntry({ ...row, fy });
-        if (ok) added++;
+      // Insert in chunks of 25 — 25 rows per round-trip, safely parallel
+      for (let i = 0; i < newRows.length; i += 25) {
+        const chunk = newRows.slice(i, i + 25).map(r => ({ ...r, fy }));
+        const ok = await insertITEntriesBatch(chunk, fy);
+        if (ok) added += chunk.length;
+        done += chunk.length;
+        onProgress?.(done, total);          // ← drives the progress bar
+        // Let the UI breathe between chunks
+        await new Promise(r => setTimeout(r, 0));
       }
     }
 
@@ -304,33 +297,51 @@ function TDSReconcileTab({ salesWorkingData, activeFY, showToast, claimRules = [
         return;
       }
 
-      const summary = await syncITEntries(allParsed);
+   const summary = await syncITEntries(allParsed, (done, total) =>
+  setSyncProgress({ done, total })
+);
+setSyncProgress(null);
 
-      const fresh = await loadITEntries(activeFY);
-      setItData(fresh.map(r => ({
-        id: r.id,
-        deductorName: r.deductor_name,
-        deductorPan: r.deductor_pan,
-        sectionCode: r.section_code,
-        dateRaw: r.date,
-        grossAmount: r.gross_amount,
-        tdsAmount: r.tds_amount,
-        status: r.status,
-        date: r.date,
-        _sourcePath: r.source_path || `db-${r.id}`
-      })));
+// ✅ Reload EVERY FY that was in the uploaded files, not just activeFY
+const mapRow = (r) => ({
+  id: r.id,
+  deductorName: r.deductor_name,
+  deductorPan: r.deductor_pan,
+  sectionCode: r.section_code,
+  dateRaw: r.date,
+  grossAmount: r.gross_amount,
+  tdsAmount: r.tds_amount,
+  status: r.status,
+  date: r.date,
+  _sourcePath: r.source_path || `db-${r.id}`
+});
 
-      const parts = Object.entries(summary).map(
-        ([fy, s]) => `${fy}: +${s.added}/~${s.skipped}/−${s.removed}`
-      );
-      setFileName(`${csvFiles.length} file(s) parsed`);
-      showToast(`Synced: ${parts.join(' | ')}`);
-    } catch (err) {
-      showToast("Failed to sync: " + (err.message || "Unknown error"), "error");
-      console.error(err);
-    }
-    e.target.value = "";
-  };
+const syncedFYs = Object.keys(summary);
+let merged = [];
+for (const fy of syncedFYs) {
+  merged = merged.concat(await loadITEntries(fy));
+}
+setItData(merged.map(mapRow));
+
+// ✅ Warn (or auto-switch) when the import landed in a different FY than the view
+if (!syncedFYs.includes(activeFY)) {
+  showToast(
+    `Imported FY ${syncedFYs.join(", ")} — you're viewing ${activeFY}. Switch the FY selector to reconcile it.`,
+    "error"
+  );
+}
+
+const parts = Object.entries(summary).map(
+  ([fy, s]) => `${fy}: +${s.added}/~${s.skipped}/−${s.removed}`
+);
+setFileName(`${csvFiles.length} file(s) parsed`);
+showToast(`Synced: ${parts.join(' | ')}`);
+} catch (err) {
+  showToast("Failed to sync: " + (err.message || "Unknown error"), "error");
+  console.error(err);
+}
+e.target.value = "";
+};
 
   // ─── Reconciliation logic ───
   const getItKey = (it) => it.id || it._sourcePath;
@@ -577,6 +588,21 @@ const sideBySideRows = useMemo(() => {
             Loaded: <strong style={{ color:"#f59e0b" }}>{fileName}</strong> — {itData.length} entries in database
           </div>
         )}
+      {syncProgress && (
+  <div style={{ marginTop:12 }}>
+    <div style={{ display:"flex", justifyContent:"space-between", fontSize:11, color:"#64748b", marginBottom:4 }}>
+      <span>Syncing {syncProgress.done} / {syncProgress.total} entries…</span>
+      <span>{Math.round(syncProgress.done / syncProgress.total * 100)}%</span>
+    </div>
+    <div style={{ height:8, background:"#0f1117", borderRadius:4, border:"1px solid #1e2a3a", overflow:"hidden" }}>
+      <div style={{
+        height:"100%", width:`${(syncProgress.done / syncProgress.total) * 100}%`,
+        background:"linear-gradient(90deg,#f59e0b,#ef4444)",
+        transition:"width .15s"
+      }} />
+    </div>
+  </div>
+)}
       </div>
 
       {/* MAPPING SECTION */}

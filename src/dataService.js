@@ -1285,10 +1285,39 @@ export async function deleteITEntry(id) {
 }
 
 export async function deleteITEntriesByDeductor(fy, deductorName) {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return false;
   const { error } = await supabase
-    .from("it_entries")
+    .from("tds_it_entries")
     .delete()
     .eq("fy", fy)
-    .eq("deductor_name", deductorName);
+    .eq("deductor_name", deductorName)
+    .eq("user_id", user.id);       // ← scope to the owner, matches RLS
+  if (error) console.error("deleteITEntriesByDeductor:", error.message);
+  return !error;
+}
+
+export async function insertITEntriesBatch(rows, fy) {
+  if (!rows.length) return true;
+
+  // ✅ Required by RLS — same as upsertITEntry
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return false;
+
+  const payload = rows.map(e => ({
+    user_id: user.id,              // ← THE fix
+    fy,
+    deductor_name: e.deductorName,
+    deductor_pan: e.deductorPan,
+    section_code: e.sectionCode,
+    date: e.date,
+    gross_amount: e.grossAmount,
+    tds_amount: e.tdsAmount,
+    status: e.status,
+    source_path: e._sourcePath
+  }));
+
+  const { error } = await supabase.from("tds_it_entries").insert(payload);
+  if (error) console.error("insertITEntriesBatch:", error.message);  // log the message, not just the object
   return !error;
 }
