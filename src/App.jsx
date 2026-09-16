@@ -1472,9 +1472,14 @@ function computeAdjustPlan(cluster, sourceRefNo) {
     const m = s.match(/^(\d+)(.*)$/);
     return m ? { num: parseInt(m[1], 10), suf: m[2].toUpperCase() } : { num: Infinity, suf: s.toUpperCase() };
   };
-  const receivers = members
-    .filter(m => m.refNo !== sourceRefNo)
-    .map(m => ({ m, pending: m._finalAmt - (m.a1 + m.a2 + m.a3) }))
+  // Real payments only — ADJUST: entries are virtual, not actual money received
+const realPaid = (m) => [1,2,3].reduce((s, i) =>
+  s + ((m[`bankName${i}`] || "").startsWith("ADJUST:")
+        ? 0
+        : (parseFloat(m[`bankAmt${i}`]) || 0)), 0);
+const receivers = members
+  .filter(m => m.refNo !== sourceRefNo)
+  .map(m => ({ m, pending: m._finalAmt - realPaid(m) }))
     .filter(x => x.pending > 0)
     .sort((a, b) => {
       const pa = parseRef(a.m.refNo), pb = parseRef(b.m.refNo);
@@ -5905,8 +5910,11 @@ setRecords(newRecords);
               (plan.summary.leftover > 0 ? `\n\n⚠ ₹${plan.summary.leftover.toLocaleString("en-IN")} surplus remains (receivers fully covered).` : "") +
               `\n\nProceed?`;
             if (confirm(msg)) {
-              const done = await applyAdjustPlan(plan);
-              if (done) showToast(`Distributed ₹${plan.summary.distributed.toLocaleString("en-IN")} across linked refs`);
+             const done = await applyAdjustPlan(plan, newRecords);
+if (done.ok) {
+  newRecords = done.records;
+  showToast(`Distributed ₹${plan.summary.distributed.toLocaleString("en-IN")} across linked refs`);
+}
             }
           }
         }
@@ -5918,19 +5926,19 @@ setRecords(newRecords);
     setEditingRef("");
   };
  
- // Apply an adjust-plan: write the transfer entries into bank slots across the cluster,
+// Apply an adjust-plan: write the transfer entries into bank slots across the cluster,
 // recompute each affected record's balance, persist, and update state.
-const applyAdjustPlan = async (plan) => {
-  if (!plan.ok) { showToast(plan.error, "error"); return false; }
+// baseRecords = the FRESH record set (with the just-saved payment), never stale state.
+const applyAdjustPlan = async (plan, baseRecords) => {
+  if (!plan.ok) { showToast(plan.error, "error"); return { ok: false, records: baseRecords }; }
 
-  // Group entries by refNo (a ref may only get one entry here, but be safe)
   const byRef = {};
   plan.entries.forEach(e => { (byRef[e.refNo] ||= []).push(e); });
 
   const updatedRecs = [];
   for (const refNo of Object.keys(byRef)) {
-    const rec = records.find(r => r.refNo === refNo);
-    if (!rec) { showToast(`Record ${refNo} not found — aborted`, "error"); return false; }
+    const rec = baseRecords.find(r => r.refNo === refNo);   // ← fresh set, not stale state
+    if (!rec) { showToast(`Record ${refNo} not found — aborted`, "error"); return { ok: false, records: baseRecords }; }
 
     let updated = { ...rec };
     for (const e of byRef[refNo]) {
@@ -5939,7 +5947,6 @@ const applyAdjustPlan = async (plan) => {
       updated[`bankName${e.slot}`] = e.bankName;
     }
 
-    // Recompute this record's calc + balance with its own cdRule
     const cdRule = claimRules.find(r => r.partyName === updated.deliveryAt)?.cdRule || "standard";
     const c = calcAll(updated, updated._tds || 0, cdRule);
     updated = { ...updated, _cdRule: cdRule, _shortage: c.shortage, _halfKgQty: c.halfKgQty, _netQty: c.netQty, _netAmt1: c.netAmt1, _cdAmt: c.cdAmt, _netAmt: c.netAmt, _brokerageAmt: c.brokerageAmt, _finalAmt: c.finalAmt, _balance: c.balance };
@@ -5947,19 +5954,14 @@ const applyAdjustPlan = async (plan) => {
     updatedRecs.push(updated);
   }
 
-  // Persist all
   for (const rec of updatedRecs) {
     const ok = await upsertRecord(rec, activeFY);
-    if (!ok) { showToast(`Failed to save ${rec.refNo} — check connection`, "error"); return false; }
+    if (!ok) { showToast(`Failed to save ${rec.refNo} — check connection`, "error"); return { ok: false, records: baseRecords }; }
   }
 
-  // Update state in one pass
-  setRecords(prev => prev.map(r => {
-    const u = updatedRecs.find(x => x.refNo === r.refNo);
-    return u || r;
-  }));
-
-  return true;
+  const newSet = baseRecords.map(r => updatedRecs.find(u => u.refNo === r.refNo) || r);
+  setRecords(newSet);
+  return { ok: true, records: newSet };
 };
 
 const handleEditByRef = () => {
@@ -6118,8 +6120,9 @@ let cols;
       subHead += `<div style="font-size:13px;font-weight:bold;margin:0 0 2px">BROKER: ${filterBroker}</div>`;
       if (filterParty) subHead += `<div style="font-size:11px;margin:0 0 8px">PARTY: ${filterParty}</div>`;
     }
-    html += `<h2>${title} — ${rows.length} records</h2>${subHead}<table><thead><tr>`;
-
+    const fyShort = String(activeFY || "").replace(/^20/, "");
+html += `<h1 style="font-size:20px;text-align:center;margin:0 0 2px">I K ENTERPRISES ${fyShort}</h1><h2>${title} — ${rows.length} records</h2>${subHead}<table>...`;
+  
     cols.forEach(k => html += `<th>${label(k)}</th>`);
     html += `</tr></thead><tbody>`;
   rows.forEach(r => {
@@ -6283,7 +6286,8 @@ let cols;
       th { background: #eee; text-align: left; }
       td { word-break: break-word; }
     </style>`;
-    html += `<h2>${title} — ${rows.length} records</h2>${subHead}<table><thead><tr>`;
+    const fyShort = String(activeFY || "").replace(/^20/, "");
+html += `<h1 style="font-size:20px;text-align:center;margin:0 0 2px">I K ENTERPRISES ${fyShort}</h1><h2>${title} — ${rows.length} records</h2>${subHead}<table>...`;
     cols.forEach(k => html += `<th>${label(k)}</th>`);
     html += `</tr></thead><tbody>`;
 rows.forEach(r => {
@@ -6343,7 +6347,12 @@ const money = (v) => (v === 0 || v === "" || v == null) ? "" : "₹" + Number(v)
       th { background: #eee; text-align: left; }
       td { word-break: break-word; }
     </style>`;
-    html += `<h2>${mode === "party" ? "PARTYWISE" : "BROKERWISE"} SUMMARY — ${rows.length} records</h2>${subHead}<table><thead><tr>`;
+    const fyShort = String(activeFY || "").replace(/^20/, "");  // "2026-27" → "26-27"
+
+html += `
+  <h1 style="font-size:20px;text-align:center;margin:0 0 2px">I K ENTERPRISES ${fyShort}</h1>
+  <h2 style="font-size:14px;margin:0 0 8px;text-align:center">${mode === "party" ? "PARTYWISE" : "BROKERWISE"} SUMMARY — ${rows.length} records</h2>
+  ${subHead}<table><thead><tr>`;
     visibleCols.forEach(col => html += `<th>${col.label.toUpperCase()}</th>`);
     html += `</tr></thead><tbody>`;
     rows.forEach(({ r, c }) => {
