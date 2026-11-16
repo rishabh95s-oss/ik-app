@@ -1251,6 +1251,19 @@ claims.map((claim) => (
     </div>
   );
 }
+// Fixed terms use calendar months, with the fractional month converted on a 30-day basis.
+function calculateFixedLoanDueDate(startDate, months) {
+  const termMonths = parseFloat(months);
+  if (!startDate || !Number.isFinite(termMonths) || termMonths <= 0) return null;
+
+  const due = new Date(startDate);
+  const wholeMonths = Math.floor(termMonths);
+  const extraDays = Math.round(termMonths * 30) - wholeMonths * 30;
+  due.setUTCMonth(due.getUTCMonth() + wholeMonths);
+  due.setUTCDate(due.getUTCDate() + extraDays);
+  return Number.isNaN(due.getTime()) ? null : due.toISOString().slice(0, 10);
+}
+
 // Loan interest + brokerage calculation. All money rounded to whole rupees.
 function calcLoan({ principal, interestRate, brokerageRate, loanType, months, days, noTds }) {
   const P = parseFloat(principal) || 0;
@@ -4491,11 +4504,10 @@ const calc = calcLoan({
     loanType: f.loanType, months: f.months, days: f.days, noTds: is15h(f.partyName)
   });
   // Term 1 window (fixed only)
-  let dueDate = null;
-  if (f.loanType === "fixed") {
-    const d = new Date(f.startDate);
-    d.setMonth(d.getMonth() + Math.round(parseFloat(f.months)));
-    dueDate = d.toISOString().slice(0, 10);
+  const dueDate = f.loanType === "fixed" ? calculateFixedLoanDueDate(f.startDate, f.months) : null;
+  if (f.loanType === "fixed" && !dueDate) {
+    showToast("Enter a valid start date and term", "error");
+    return;
   }
 
   // 1. Create the loan (identity + unchanging fields). due_date kept for legacy but no longer authoritative.
@@ -4559,9 +4571,8 @@ const handleRenewLoan = async () => {
     loanType: "fixed", months, days: null, noTds: is15h(loan.partyName)
   });
   // New term's due date = its start + renewal months
-  const d = new Date(termStart);
-  d.setMonth(d.getMonth() + Math.round(months));
-  const newDueDate = d.toISOString().slice(0, 10);
+  const newDueDate = calculateFixedLoanDueDate(termStart, months);
+  if (!newDueDate) { showToast("Enter a valid renewal term and check the current due date", "error"); return; }
 
   const paymentDate = termStart;                  // interest paid on the term's start (old due date)
   const fy = fyFromDate(paymentDate);
@@ -5494,6 +5505,7 @@ const [banks, setBanks] = useState([]);
 const [loanParties, setLoanParties] = useState([]);
 const [loanBrokers, setLoanBrokers] = useState([]);
 const [loanSubTab, setLoanSubTab] = useState("manage");
+const [loanTypeTab, setLoanTypeTab] = useState("fixed");
 const [newLoanParty, setNewLoanParty] = useState("");
 const [newLoanBroker, setNewLoanBroker] = useState("");
 const [loanInterestEvents, setLoanInterestEvents] = useState([]);
@@ -10837,10 +10849,8 @@ const handleUnignore = async (party) => {
                 principal: rl.principal, interestRate: renewInterestRate, brokerageRate: renewBrokerageRate,
                 loanType: "fixed", months: renewMonths, days: null, noTds: is15h(rl.partyName)
               }) : null;
-              const rDue = (rl && parseFloat(renewMonths) > 0) ? (() => {
-                const d = new Date(rl.dueDate); d.setMonth(d.getMonth() + Math.round(parseFloat(renewMonths)));
-                return d.toISOString().slice(0,10).split("-").reverse().join("-");
-              })() : "";
+              const renewalDueDate = calculateFixedLoanDueDate(rl?.dueDate, renewMonths);
+              const rDue = renewalDueDate ? renewalDueDate.split("-").reverse().join("-") : "";
               const money = (n) => `₹${Math.round(n||0).toLocaleString("en-IN")}`;
 
               return (
@@ -10923,16 +10933,55 @@ const handleUnignore = async (party) => {
         showToast(isOnlyTerm ? "Loan deleted" : `Term ${term.termNumber} deleted`);
       };
 
-      if (loansWithTerms.length === 0) {
-        return <div style={{ padding:40, textAlign:"center", color:"#64748b" }}>No loans yet.</div>;
+      const visibleLoans = loansWithTerms
+        .filter(loan => (loan.loanType === "fixed") === (loanTypeTab === "fixed"))
+        .map(loan => {
+          const latestTermNo = loan.terms.length ? Math.max(...loan.terms.map(t => t.termNumber || 0)) : 0;
+          const currentDue = loan.terms.find(t => t.termNumber === latestTermNo)?.dueDate;
+          return { loan, latestTermNo, currentDue };
+        });
+
+      if (loanTypeTab === "fixed") {
+        visibleLoans.sort((a, b) => {
+          if (!a.currentDue) return b.currentDue ? 1 : 0;
+          if (!b.currentDue) return -1;
+          return a.currentDue.localeCompare(b.currentDue);
+        });
       }
 
       return (
         <div>
-          {loansWithTerms.map(loan => {
+          <div role="group" aria-label="Loan type" style={{ display:"flex", gap:8, marginBottom:16 }}>
+            {[
+              { id:"fixed", label:"Fixed" },
+              { id:"open", label:"Open" },
+            ].map(({ id, label }) => {
+              const selected = loanTypeTab === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => setLoanTypeTab(id)}
+                  style={{
+                    padding:"7px 14px", borderRadius:8, border:"1px solid #1e2a3a",
+                    fontWeight:700, fontSize:12, cursor:"pointer",
+                    background:selected ? "#f59e0b" : "#151b2a",
+                    color:selected ? "#0f1117" : "#94a3b8",
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          {visibleLoans.length === 0 && (
+            <div style={{ padding:40, textAlign:"center", color:"#64748b" }}>
+              {loanTypeTab === "fixed" ? "No fixed loans yet." : "No open loans yet."}
+            </div>
+          )}
+          {visibleLoans.map(({ loan, latestTermNo, currentDue }) => {
             const isFixed = loan.loanType === "fixed";
-            const latestTermNo = loan.terms.length ? Math.max(...loan.terms.map(t => t.termNumber || 0)) : 0;
-            const currentDue = loan.terms.length ? loan.terms.find(t => t.termNumber === latestTermNo)?.dueDate : null;
 
             return (
               <div key={loan.id} style={{ marginBottom:24, border:"1px solid #1e2a3a", borderRadius:8, overflow:"hidden" }}>
@@ -10943,7 +10992,7 @@ const handleUnignore = async (party) => {
                   <span style={{ fontSize:12, color:"#cbd5e1" }}>Principal <strong>{money(loan.principal)}</strong></span>
                   <span style={{ fontSize:11, color:"#64748b" }}>Int {loan.interestRate}% · Brok {loan.brokerageRate}%</span>
                   <span style={{ fontSize:11, padding:"2px 8px", borderRadius:4, background: isFixed ? "#3b82f622" : "#64748b22", color: isFixed ? "#38bdf8" : "#94a3b8", fontWeight:700 }}>
-                    {isFixed ? "FIXED" : "NON-FIXED"}
+                    {isFixed ? "FIXED" : "OPEN"}
                   </span>
                   {isFixed && currentDue && (
                     <span style={{ marginLeft:"auto", fontSize:12, color:"#f59e0b", fontWeight:700 }}>Current due: {fmtDate(currentDue)}</span>
